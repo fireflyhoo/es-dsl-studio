@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ES DSL Studio · Elasticsearch 可视化查询编辑器</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- 顶栏 -->
+  <header id="topbar">
+    <div class="logo">{&nbsp;}</div>
+    <div class="title">
+      <b>ES DSL Studio</b>
+      <span>Elasticsearch 可视化查询编辑器 · 拖出来就是 DSL</span>
+    </div>
+    <div class="spacer"></div>
+    <button class="btn" id="btn-sample-top" title="载入一个 bool 组合查询示例">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/></svg>
+      示例
+    </button>
+    <button class="btn" id="btn-import" title="把已有 DSL JSON 反向解析成查询树">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+      导入 JSON
+    </button>
+    <button class="btn" id="btn-copy" title="复制生成的 DSL">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+      复制
+    </button>
+    <button class="btn danger" id="btn-clear" title="清空画布">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>
+      清空
+    </button>
+  </header>
+
+  <div id="main">
+
+    <!-- 左：查询元素库 -->
+    <aside class="panel" id="palette">
+      <div class="panel-h">查询元素库 <span class="sub">拖到右侧画布</span></div>
+      <div class="search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+        <input id="palette-search" type="text" placeholder="搜索查询类型，如 match / 范围…">
+      </div>
+      <div id="palette-list"></div>
+    </aside>
+
+    <!-- 中：查询树画布 + 底部属性面板 -->
+    <section class="panel" id="canvas-panel">
+      <div id="canvas-toolbar">
+        <span class="lbl">查询树</span>
+        <span class="sub" style="color:var(--muted);font-size:12px">点选节点编辑参数 · 拖动节点调整结构</span>
+      </div>
+      <div id="tree"></div>
+      <div id="insp-resizer" title="拖拽调整属性面板高度"></div>
+      <div id="inspector-panel">
+        <div class="panel-h">节点属性 <span class="sub" id="insp-sub">未选中节点</span></div>
+        <div id="inspector"></div>
+      </div>
+      <div id="statusbar"></div>
+    </section>
+
+    <!-- 右：DSL JSON -->
+    <aside class="panel">
+      <div class="panel-h">DSL JSON <span class="sub">实时生成 · 可直接复制使用</span></div>
+      <div id="json-toolbar">
+        <span class="set">size <input id="set-size" value="10"></span>
+        <span class="set">from <input id="set-from" placeholder="0"></span>
+        <span class="set">total_hits
+          <select id="set-tth"><option value="true">true</option><option value="false">false</option></select>
+        </span>
+        <span class="set">min_score <input id="set-minscore" placeholder="—"></span>
+        <span style="flex:1"></span>
+        <button class="btn sm" id="btn-copy2">复制</button>
+        <button class="btn sm" id="btn-download">下载</button>
+      </div>
+      <div id="json-warn"></div>
+      <div id="json-out"></div>
+    </aside>
+
+  </div>
+</div>
+
+<!-- 导入弹窗 -->
+<div id="modal-mask">
+  <div id="modal">
+    <div class="m-h">导入 DSL JSON
+      <button class="icon-btn x" id="m-cancel" title="关闭">✕</button>
+    </div>
+    <div class="m-b">
+      <textarea id="m-text" rows="14" spellcheck="false" placeholder='粘贴完整 search body 或 query 片段，例如：
+{
+  "query": {
+    "bool": {
+      "must": [{ "match": { "title": "手机" } }]
+    }
+  }
+}'></textarea>
+      <div class="m-err" id="m-err"></div>
+    </div>
+    <div class="m-f">
+      <button class="btn" id="m-cancel2" onclick="document.getElementById('m-cancel').click()">取消</button>
+      <button class="btn primary" id="m-ok">解析为查询树</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script src="js/queries.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
