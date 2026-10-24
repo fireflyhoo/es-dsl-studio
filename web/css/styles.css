@@ -14,6 +14,8 @@
   --mono: "JetBrains Mono", "Cascadia Code", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --sans: "Outfit", "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
   --radius: 10px;
+  --btn-radius: 6px;    /* 常规按钮圆角 */
+  --btn-radius-sm: 5px; /* 小按钮 / 图标按钮圆角 */
   --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.05);
   --shadow-md: 0 4px 14px rgba(16, 24, 40, 0.08);
 }
@@ -63,6 +65,7 @@ body {
 #topbar .title span { display: block; font-size: 11.5px; color: var(--muted); }
 #topbar .spacer { flex: 1; }
 
+/* ---------- 按钮体系：统一微交互（悬停轻抬 / 按下回弹 / 键盘焦点环） ---------- */
 .btn {
   appearance: none;
   border: 1px solid var(--border-strong);
@@ -70,19 +73,58 @@ body {
   color: var(--text);
   font: 500 13px var(--sans);
   padding: 7px 13px;
-  border-radius: 8px;
+  border-radius: var(--btn-radius);
   cursor: pointer;
   display: inline-flex; align-items: center; gap: 6px;
-  transition: all 0.15s ease;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease,
+    box-shadow 0.15s ease, transform 0.1s ease;
   white-space: nowrap;
+  box-shadow: var(--shadow-sm);
 }
-.btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
-.btn:active { transform: scale(0.97); }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-.btn.primary:hover { background: #0f766e; color: #fff; }
-.btn.danger:hover { border-color: var(--danger); color: var(--danger); background: rgba(220, 38, 38, 0.06); }
-.btn.sm { padding: 4px 9px; font-size: 12px; border-radius: 6px; }
+.btn:hover {
+  border-color: var(--accent); color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
+}
+.btn:active { transform: translateY(0) scale(0.97); box-shadow: var(--shadow-sm); }
+.btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none; box-shadow: none; }
+.btn.primary {
+  background: linear-gradient(135deg, #0d9488, #14b8a6);
+  border-color: transparent; color: #fff;
+  box-shadow: 0 1px 2px rgba(13, 148, 136, 0.28), 0 4px 12px rgba(13, 148, 136, 0.16);
+}
+.btn.primary:hover {
+  background: linear-gradient(135deg, #0f766e, #0d9488);
+  color: #fff;
+  box-shadow: 0 2px 4px rgba(13, 148, 136, 0.32), 0 8px 20px rgba(13, 148, 136, 0.26);
+}
+.btn.primary:focus-visible { outline-color: #0f766e; }
+/* 运行按钮：红色主操作，与 teal 主色区分「执行」语义 */
+#btn-run {
+  background: linear-gradient(135deg, #dc2626, #ef4444);
+  border-color: transparent; color: #fff;
+  box-shadow: 0 1px 2px rgba(220, 38, 38, 0.28), 0 4px 12px rgba(220, 38, 38, 0.16);
+}
+#btn-run:hover {
+  background: linear-gradient(135deg, #b91c1c, #dc2626);
+  color: #fff;
+  box-shadow: 0 2px 4px rgba(220, 38, 38, 0.32), 0 8px 20px rgba(220, 38, 38, 0.26);
+}
+#btn-run:focus-visible { outline-color: #b91c1c; }
+.btn.danger:hover {
+  border-color: var(--danger); color: var(--danger);
+  background: rgba(220, 38, 38, 0.06);
+  box-shadow: 0 4px 14px rgba(220, 38, 38, 0.14);
+}
+.btn.danger:active { box-shadow: none; }
+.btn.sm { padding: 4px 9px; font-size: 12px; border-radius: var(--btn-radius-sm); }
+.btn.sm:active { transform: translateY(0) scale(0.95); }
 .btn svg { width: 14px; height: 14px; }
+@media (prefers-reduced-motion: reduce) {
+  .btn:hover, .btn:active, .icon-btn:hover, .icon-btn:active { transform: none; }
+}
 
 /* ---------- 通用小 loading 转圈 ---------- */
 @keyframes spinRot { to { transform: rotate(360deg); } }
@@ -183,7 +225,7 @@ body {
 .pitem .cn { font-size: 12.5px; color: var(--text); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pitem .add {
   opacity: 0;
-  width: 20px; height: 20px; border-radius: 5px;
+  width: 20px; height: 20px; border-radius: 4px;
   border: 1px solid var(--border-strong);
   color: var(--muted); font-size: 14px; line-height: 1;
   display: flex; align-items: center; justify-content: center;
@@ -242,12 +284,20 @@ body {
 /* 面板折叠按钮（属性面板 / 聚合统计区共用） */
 .sec-toggle {
   width: 22px; height: 22px; flex-shrink: 0; padding: 0;
-  border: 1px solid var(--border); background: #fff; border-radius: 6px;
+  border: 1px solid var(--border); background: #fff; border-radius: var(--btn-radius-sm);
   color: var(--muted); cursor: pointer;
   display: flex; align-items: center; justify-content: center;
-  transition: all 0.12s;
+  box-shadow: var(--shadow-sm);
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease,
+    box-shadow 0.12s ease, transform 0.1s ease;
 }
-.sec-toggle:hover { color: var(--accent); border-color: var(--accent); }
+.sec-toggle:hover {
+  color: var(--accent); border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: var(--shadow-md); transform: translateY(-1px);
+}
+.sec-toggle:active { transform: scale(0.9); box-shadow: none; }
+.sec-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .sec-toggle svg { width: 12px; height: 12px; transition: transform 0.15s ease; }
 .collapsed .sec-toggle svg { transform: rotate(-90deg); } /* 折叠后箭头朝右，示意可展开 */
 #aggs-sec.collapsed #aggs-tree { display: none; }
@@ -341,14 +391,24 @@ body {
 .icon-btn {
   width: 22px; height: 22px;
   border: 1px solid var(--border);
-  background: #fff; border-radius: 6px;
+  background: #fff; border-radius: var(--btn-radius-sm);
   color: var(--muted); cursor: pointer;
   font-size: 12px; line-height: 1;
   display: flex; align-items: center; justify-content: center;
-  transition: all 0.12s;
+  box-shadow: var(--shadow-sm);
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease,
+    box-shadow 0.12s ease, transform 0.1s ease;
 }
-.icon-btn:hover { color: var(--accent); border-color: var(--accent); }
-.icon-btn.del:hover { color: var(--danger); border-color: var(--danger); }
+.icon-btn:hover {
+  color: var(--accent); border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: var(--shadow-md); transform: translateY(-1px);
+}
+.icon-btn:active { transform: scale(0.9); box-shadow: none; }
+.icon-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.icon-btn.del:hover { color: var(--danger); border-color: var(--danger); background: rgba(220, 38, 38, 0.06); }
+/* 关闭类 ✕：悬停直接实心红，比描边红更干脆 */
+.icon-btn.x:hover { color: #fff; background: var(--danger); border-color: var(--danger); }
 .icon-btn svg { width: 12px; height: 12px; }
 
 .qnode-body { padding: 2px 10px 10px 26px; }
@@ -409,7 +469,7 @@ body {
 }
 #insp-resizer:hover, #insp-resizer.active { background: var(--accent-soft); }
 #inspector-panel {
-  height: 300px;
+  height: 225px; /* 300px 下调 25% */
   flex-shrink: 1; /* 结果抽屉展开后空间紧张时自动压缩，别把布局顶出窗口 */
   min-height: 130px;
   display: flex; flex-direction: column;
@@ -490,12 +550,13 @@ body {
   background: #e5e7eb; color: var(--muted);
   font: 700 11px/1 var(--sans); cursor: pointer;
   display: none; align-items: center; justify-content: center;
-  transition: background 0.12s, color 0.12s;
+  transition: background 0.12s, color 0.12s, transform 0.1s;
 }
 .ctl.has > .ctl-x { display: flex; }
 /* 下拉框旁边的✕做成轻量样式，别抢主控件 */
 .ctl.ctl-sel > .ctl-x { background: transparent; color: var(--faint); }
 .ctl-x:hover { background: var(--danger); color: #fff; }
+.ctl-x:active { transform: translateY(-50%) scale(0.85); }
 .field.wide .ctl-x { top: 8px; transform: none; }
 
 .switch-row { display: flex; align-items: center; gap: 8px; }
@@ -664,7 +725,7 @@ body {
   display: inline-flex;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 9px;
+  border-radius: 7px;
   padding: 3px;
   gap: 2px;
   margin-left: 8px;
@@ -673,10 +734,11 @@ body {
 .viewswitch button {
   appearance: none; border: 0; background: transparent;
   font: 500 13px var(--sans); color: var(--muted);
-  padding: 6px 14px; border-radius: 7px; cursor: pointer;
+  padding: 6px 14px; border-radius: var(--btn-radius-sm); cursor: pointer;
   transition: all 0.14s ease; white-space: nowrap;
 }
-.viewswitch button:hover { color: var(--text); }
+.viewswitch button:hover { color: var(--text); background: rgba(15, 23, 42, 0.045); }
+.viewswitch button:active { transform: scale(0.96); }
 .viewswitch button.on { background: #fff; color: var(--accent); box-shadow: var(--shadow-sm); font-weight: 600; }
 
 #query-actions { display: flex; gap: 8px; }
@@ -731,11 +793,12 @@ body.view-index #query-actions { display: none; }
 .ctl-src-btn {
   display: inline-flex; align-items: center; gap: 5px;
   max-width: 160px; padding: 5px 7px;
-  border: 0; border-radius: 6px; background: transparent;
+  border: 0; border-radius: var(--btn-radius-sm); background: transparent;
   font: 600 12.5px var(--sans); color: var(--text);
-  cursor: pointer; transition: background 0.14s ease;
+  cursor: pointer; transition: background 0.14s ease, transform 0.1s ease;
 }
 .ctl-src-btn:hover { background: rgba(15, 23, 42, 0.05); }
+.ctl-src-btn:active { transform: scale(0.96); }
 .ctl-src.open .ctl-src-btn { background: var(--accent-soft); color: var(--accent); }
 .ctl-src-val { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ctl-src-btn.empty .ctl-src-val { color: var(--faint); font-weight: 500; }
@@ -756,11 +819,13 @@ body.view-index #query-actions { display: none; }
 .ctl-ix > .ctl-x { position: static; transform: none; flex: none; }
 .ctl-dd {
   flex: none; width: 20px; height: 20px; padding: 0; margin: 0;
-  border: 0; border-radius: 5px; background: transparent;
+  border: 0; border-radius: 4px; background: transparent;
   color: var(--faint); cursor: pointer;
   display: inline-flex; align-items: center; justify-content: center;
+  transition: background 0.12s, color 0.12s, transform 0.1s;
 }
 .ctl-dd:hover { background: rgba(15, 23, 42, 0.08); color: var(--text); }
+.ctl-dd:active { transform: scale(0.88); }
 .ctl-dd svg { width: 13px; height: 13px; }
 .ctl-ix.open .ctl-dd { color: var(--accent); background: var(--accent-soft); }
 /* 索引列表加载中：输入框右侧小转圈 */
@@ -962,10 +1027,12 @@ body.view-index #index-app { display: block; flex: 1; min-height: 0; padding: 12
 .fs-item {
   display: flex; align-items: center; gap: 8px;
   width: 100%; border: 0; background: transparent;
-  padding: 6px 9px; border-radius: 7px; cursor: pointer;
+  padding: 6px 9px; border-radius: var(--btn-radius-sm); cursor: pointer;
   font: 12.5px var(--sans); color: var(--text); text-align: left;
+  transition: background 0.1s ease, transform 0.08s ease;
 }
 .fs-item:hover, .fs-item.on { background: var(--accent-soft); }
+.fs-item:active { transform: scale(0.985); }
 .fs-path {
   flex: 1; min-width: 0;
   font-family: var(--mono); font-size: 12px; font-weight: 600;
@@ -1029,8 +1096,9 @@ body.view-index #index-app { display: block; flex: 1; min-height: 0; padding: 12
 }
 .cp-item {
   display: flex; align-items: center; gap: 8px;
-  padding: 5px 8px; border-radius: 6px; cursor: pointer;
+  padding: 5px 8px; border-radius: var(--btn-radius-sm); cursor: pointer;
   font: 12.5px var(--sans); color: var(--text);
+  transition: background 0.1s ease;
 }
 .cp-item:hover { background: var(--accent-soft); }
 .cp-item input { width: 14px; height: 14px; margin: 0; flex-shrink: 0; accent-color: var(--accent); cursor: pointer; }
@@ -1046,11 +1114,14 @@ body.view-index #index-app { display: block; flex: 1; min-height: 0; padding: 12
   font-size: 11.5px; color: var(--muted);
 }
 .cp-act {
-  appearance: none; border: 1px solid var(--border-strong); border-radius: 6px;
+  appearance: none; border: 1px solid var(--border-strong); border-radius: var(--btn-radius-sm);
   background: #fff; color: var(--text);
   font: 500 11.5px var(--sans); padding: 3px 8px; cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition: border-color 0.12s, color 0.12s, background 0.12s, transform 0.1s;
 }
-.cp-act:hover { border-color: var(--accent); color: var(--accent); }
+.cp-act:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.cp-act:active { transform: scale(0.94); }
 
 /* ============ 索引管理：详情面板 ============ */
 #idx-detail { display: flex; flex-direction: column; min-height: 0; }
@@ -1099,8 +1170,9 @@ body.view-index #index-app { display: block; flex: 1; min-height: 0; padding: 12
   padding: 9px 12px; cursor: pointer;
   border-bottom: 2px solid transparent;
   white-space: nowrap;
+  transition: color 0.14s ease, border-color 0.14s ease, background 0.14s ease;
 }
-.idx-tabs button:hover { color: var(--text); }
+.idx-tabs button:hover { color: var(--text); background: rgba(15, 23, 42, 0.035); }
 .idx-tabs button.on { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
 
 /* 结果抽屉页签行右侧的「选择列」按钮（id 选择器压过 .idx-tabs button） */
@@ -1109,13 +1181,19 @@ body.view-index #index-app { display: block; flex: 1; min-height: 0; padding: 12
   border: 1px solid var(--border-strong);
   background: var(--panel); color: var(--text);
   font: 500 12px var(--sans);
-  padding: 4px 10px; border-radius: 7px;
+  padding: 4px 10px; border-radius: var(--btn-radius-sm);
   cursor: pointer; align-self: center; margin: 2px 0 2px 8px;
   white-space: nowrap; flex-shrink: 0;
   border-bottom: 1px solid var(--border-strong);
-  transition: border-color 0.14s, color 0.14s;
+  box-shadow: var(--shadow-sm);
+  transition: border-color 0.14s, color 0.14s, background 0.14s, box-shadow 0.14s, transform 0.1s;
 }
-#rs-tabs #rs-cols:hover { border-color: var(--accent); color: var(--accent); }
+#rs-tabs #rs-cols:hover {
+  border-color: var(--accent); color: var(--accent);
+  background: var(--accent-soft); box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
+}
+#rs-tabs #rs-cols:active { transform: scale(0.95); box-shadow: none; }
 
 #idx-body { flex: 1; overflow: auto; padding: 14px 18px 26px; min-height: 0; }
 
@@ -1219,10 +1297,12 @@ body.view-index #index-app { display: block; flex: 1; min-height: 0; padding: 12
 .active-chip .chip-n { color: #0f766e; opacity: 0.65; white-space: nowrap; }
 .chip-x {
   border: 0; background: transparent; color: #0f766e;
-  cursor: pointer; font-size: 11px; padding: 2px 5px; opacity: 0.55;
+  cursor: pointer; font-size: 11px; padding: 2px 5px;
   border-radius: 50%;
+  transition: opacity 0.12s, background 0.12s, transform 0.1s;
 }
 .chip-x:hover { opacity: 1; background: rgba(13, 148, 136, 0.14); }
+.chip-x:active { transform: scale(0.85); }
 
 /* ============ 通用弹窗 ============ */
 .mask {
