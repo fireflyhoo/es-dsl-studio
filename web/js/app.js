@@ -1070,6 +1070,29 @@
       document.body.style.cursor = 'row-resize';
     });
 
+    // 属性面板折叠：收起只剩标题栏（记住原高度，展开后恢复）
+    const inspPanel = $('#inspector-panel');
+    let inspH = 0;
+    $('#btn-insp-toggle').addEventListener('click', () => {
+      const collapsed = inspPanel.classList.toggle('collapsed');
+      if (collapsed) {
+        inspH = inspPanel.offsetHeight || 300;
+        inspPanel.style.height = 'auto';
+        $('#insp-resizer').hidden = true; // 折叠时不给拖
+      } else {
+        inspPanel.style.height = (inspH || 300) + 'px';
+        $('#insp-resizer').hidden = false;
+      }
+      $('#btn-insp-toggle').title = collapsed ? '展开属性面板' : '收起属性面板';
+    });
+
+    // 聚合统计区折叠：只藏聚合树，标题栏与「新建聚合区」仍在
+    const aggsSec = $('#aggs-sec');
+    $('#btn-aggs-toggle').addEventListener('click', () => {
+      const collapsed = aggsSec.classList.toggle('collapsed');
+      $('#btn-aggs-toggle').title = collapsed ? '展开聚合统计区' : '收起聚合统计区';
+    });
+
     // 查询结果抽屉
     $('#btn-run').addEventListener('click', triggerRun);
     $('#rs-close').addEventListener('click', closeResultDrawer);
@@ -1093,6 +1116,25 @@
       fillIndexList(true);
       syncRunBarClear();
       syncActiveFromRunBar();
+    });
+    // 数据源下拉：自绘浮层（替代原生 select 弹层，风格与索引选择一致）
+    const srcBtn = $('#rs-source-trigger');
+    srcBtn.addEventListener('click', () => { srcPop ? srcClose() : srcOpen(); });
+    srcBtn.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        if (!srcPop) srcOpen(); else srcMoveActive(1);
+      } else if (e.key === 'ArrowUp') {
+        if (srcPop) { e.preventDefault(); srcMoveActive(-1); }
+      } else if (e.key === 'Enter') {
+        if (srcPop) {
+          e.preventDefault();
+          const on = srcPop.pop.querySelector('.fs-item.on');
+          if (on) srcPick(Number(on.dataset.i));
+        }
+      } else if (e.key === 'Escape') {
+        if (srcPop) { e.preventDefault(); srcClose(); }
+      }
     });
     $('#rs-index-x').addEventListener('click', () => {
       const i = $('#rs-index');
@@ -1219,6 +1261,7 @@
       const box = el && el.parentElement;
       if (box && box.classList.contains('ctl')) box.classList.toggle('has', !!el.value);
     });
+    srcRenderTrigger(); // 自绘数据源下拉的显示文本跟着隐藏 select 走
     // 索引名长了会被截断，悬停看全文
     const idx = $('#rs-index');
     if (idx) idx.title = idx.value || '要查询的索引，支持 a,b 与 *';
@@ -1249,6 +1292,131 @@
     else if (activeSourceId && rs.sources.some((s) => s.id === activeSourceId)) sel.value = activeSourceId;
     syncRunBarClear();
     fillIndexList();
+  }
+
+  /* -------- 数据源下拉（自绘浮层，替代原生 select 弹层） --------
+     原生 select 仍留在 DOM 里（视觉隐藏）当数据载体，所有既有读写逻辑不变；
+     触发器按钮 + fs-pop 浮层负责展示与交互，选中后同步回隐藏 select 并派发 change。 */
+  let srcPop = null; // { pop, items }
+
+  // 触发器显示文本 = 隐藏 select 当前选中项的文案（空选时为「（未选择）/（无数据源）」）
+  function srcRenderTrigger() {
+    const btn = $('#rs-source-trigger');
+    const val = $('#rs-source-val');
+    const sel = $('#rs-source');
+    if (!btn || !val || !sel) return;
+    const empty = !sel.value;
+    const text = sel.selectedIndex >= 0 && sel.options[sel.selectedIndex]
+      ? sel.options[sel.selectedIndex].textContent
+      : '（未选择）';
+    val.textContent = text;
+    btn.classList.toggle('empty', empty);
+    btn.title = empty ? '选择数据源' : text;
+  }
+
+  function srcClose() {
+    if (!srcPop) return;
+    srcPop.pop.remove();
+    const ctl = $('#rs-source-ctl');
+    if (ctl) ctl.classList.remove('open');
+    window.removeEventListener('scroll', srcPosition, true);
+    window.removeEventListener('resize', srcPosition);
+    document.removeEventListener('mousedown', srcOutside, true);
+    srcPop = null;
+  }
+
+  function srcOutside(e) {
+    if (!srcPop) return;
+    if (srcPop.pop.contains(e.target)) return;
+    const ctl = $('#rs-source-ctl');
+    if (ctl && ctl.contains(e.target)) return;
+    srcClose();
+  }
+
+  function srcPosition() {
+    if (!srcPop) return;
+    const ctl = $('#rs-source-ctl');
+    if (!ctl) return;
+    const r = ctl.getBoundingClientRect();
+    const w = Math.min(340, Math.max(200, r.width + 28));
+    srcPop.pop.style.width = w + 'px';
+    const h = srcPop.pop.offsetHeight || 240;
+    let top = r.bottom + 5;
+    if (top + h > window.innerHeight - 8) top = Math.max(8, r.top - h - 5);
+    srcPop.pop.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 8 - w)) + 'px';
+    srcPop.pop.style.top = top + 'px';
+  }
+
+  function srcRender() {
+    if (!srcPop) return;
+    const sel = $('#rs-source');
+    const cur = sel ? sel.value : '';
+    const items = [{ id: '', label: '（未选择）', none: true }].concat(
+      (rs.sources || []).map((s) => ({ id: s.id, label: s.name, ro: !!s.readonly })));
+    srcPop.items = items;
+    if (!rs.sources.length) {
+      srcPop.pop.innerHTML =
+        '<div class="fs-empty">还没有数据源<br>去「索引管理」视图添加一个集群</div>';
+      return;
+    }
+    srcPop.pop.innerHTML = items.map((it, i) =>
+      '<button type="button" class="fs-item src-item' + (it.id && it.id === cur ? ' on' : '') + '" data-i="' + i + '" title="' +
+      esc(it.label) + '">' +
+      '<span class="src-check' + (it.id && it.id === cur ? ' on' : '') + '"></span>' +
+      '<span class="fs-path">' + esc(it.label) + '</span>' +
+      (it.ro ? '<span class="src-tag">只读</span>' : '') +
+      '</button>').join('');
+    srcPosition();
+  }
+
+  function srcPick(i) {
+    if (!srcPop || !srcPop.items[i]) return;
+    const it = srcPop.items[i];
+    const sel = $('#rs-source');
+    if (!sel) return;
+    if (sel.value === it.id) { srcClose(); return; }
+    sel.value = it.id;
+    // 走既有 change 链路：拉索引列表 / 同步清空按钮 / 同步字段联动
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    srcClose();
+  }
+
+  function srcOpen() {
+    if (srcPop) { srcRender(); return; }
+    const ctl = $('#rs-source-ctl');
+    if (!ctl) return;
+    const pop = el('div', 'fs-pop src-pop');
+    pop.addEventListener('mousedown', (e) => {
+      const item = e.target.closest('.fs-item');
+      if (item) { e.preventDefault(); srcPick(Number(item.dataset.i)); }
+    });
+    pop.addEventListener('mouseover', (e) => {
+      if (!srcPop) return;
+      const item = e.target.closest('.fs-item');
+      if (!item || item.classList.contains('on')) return;
+      const prev = srcPop.pop.querySelector('.fs-item.on');
+      if (prev) prev.classList.remove('on');
+      item.classList.add('on');
+    });
+    document.body.appendChild(pop);
+    srcPop = { pop: pop, items: [] };
+    ctl.classList.add('open');
+    window.addEventListener('scroll', srcPosition, true);
+    window.addEventListener('resize', srcPosition);
+    document.addEventListener('mousedown', srcOutside, true);
+    srcRender();
+    srcPosition();
+  }
+
+  // 键盘 ↑↓ 移动高亮（触发器保持焦点，浮层跟着亮）
+  function srcMoveActive(delta) {
+    if (!srcPop || !srcPop.items.length) return;
+    const items = srcPop.pop.querySelectorAll('.fs-item');
+    let idx = -1;
+    items.forEach((n, i) => { if (n.classList.contains('on')) idx = i; });
+    const next = Math.max(0, Math.min(items.length - 1, idx + delta));
+    items.forEach((n, i) => n.classList.toggle('on', i === next));
+    if (items[next]) items[next].scrollIntoView({ block: 'nearest' });
   }
 
   // 索引候选（按数据源缓存；原生 datalist 样式不可控，改用自绘浮层）
