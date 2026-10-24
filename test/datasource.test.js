@@ -1,5 +1,5 @@
 /* 索引管理相关核心逻辑测试：mapping 扁平化 / 格式化 / URL 与鉴权 / 响应解析 */
-const E = require('../js/es-client.js');
+const E = require('../web/js/es-client.js');
 
 let failed = 0;
 function ok(name, cond, extra) {

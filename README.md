@@ -6,7 +6,12 @@ ES 的查询 DSL 本质上是一棵树：组合查询是内部节点，词项/�
 
 自带一个索引管理视图：像 MyCat 那样按「数据源 → 索引 → 字段」浏览多个 ES 集群的索引结构，并一键把字段同步到查询编辑器。生成的 DSL 也能直接对 ES 执行，结果以表格 / 聚合 / 原始 JSON 就地展示。
 
-前端纯 HTML / CSS / 原生 JS，**零依赖、零构建**；后端是 **Python 3 标准库**单文件服务，同样零依赖。双击 `index.html` 也能用。
+前端纯 HTML / CSS / 原生 JS，**零依赖、零构建**。后端有两种形态，任选其一：
+
+- **Tauri 桌面应用**（推荐）：Rust 单文件服务逻辑编译进 exe，不依赖 Python，数据源凭据存在本机 `%APPDATA%`
+- **Python 3 标准库单文件服务**（`server.py`）：同样零依赖，适合局域网共享
+
+双击 `web/index.html` 也能用（浏览器直连模式）。
 
 ![主界面](docs/screenshot-main.png)
 
@@ -114,7 +119,33 @@ ES 的查询 DSL 本质上是一棵树：组合查询是内部节点，词项/�
 
 ## 快速开始
 
-只写查询、不需要连 ES：直接双击 `index.html` 就行。要用索引管理或「运行」查 ES，推荐起后端（直连模式要求 ES 开 CORS）：
+### 桌面应用（Tauri，不需要 Python）
+
+```bash
+npm install          # 安装 Tauri CLI（仅开发/构建时需要）
+npm run dev          # 开发模式：Rust 后端 + WebView2 窗口
+npm run build        # 打包：src-tauri/target/release 下产出 exe / nsis / msi 安装包
+```
+
+桌面版把整个后端（静态托管 + ES 代理 + 数据源管理）编译进一个 exe，用户机器上**不需要 Python、不需要 Node**，只需 Windows 10/11 自带的 WebView2 运行时。前端通过自定义协议 `esdsl://` 与 Rust 通信，`fetch('/api/...')` 与浏览器版完全一致。数据源保存在 `%APPDATA%\com.esdsl.studio\sources.json`；首次启动会把旧版 `data/sources.json` 自动导入。
+
+![桌面版](docs/desktop-app.png)
+
+发布前可用自检模式验证 Rust 后端全链路（含真实 ES 访问，不弹窗口）：
+
+```bash
+src-tauri/target/debug/es-dsl-studio.exe --selftest
+```
+
+调试桥（启动窗口后执行一段 JS，结果经 `probe_result` 回传后退出）：
+
+```bash
+es-dsl-studio.exe --eval "setTimeout(() => __TAURI_INTERNALS__.invoke('probe_result', {payload: {mode: ESDC.getMode()}}), 4000)"
+```
+
+### 网页版（Python 后端）
+
+只写查询、不需要连 ES：直接双击 `web/index.html` 就行。要用索引管理或「运行」查 ES，推荐起后端（直连模式要求 ES 开 CORS）：
 
 ```bash
 python server.py
@@ -129,8 +160,9 @@ python server.py
 
 | 模式 | 怎么进入 | 请求走向 | 凭据存放 |
 |------|----------|----------|----------|
-| **服务端代理**（推荐） | 通过 `python server.py` 访问 | 浏览器 → 本机 Python → ES | 服务端 `data/sources.json`，不下发浏览器 |
-| **浏览器直连** | 直接双击 `index.html` | 浏览器 → ES | 本机 localStorage，需要 ES 开 CORS |
+| **桌面应用**（推荐） | `npm run dev` 或安装包启动 | WebView → Rust 内嵌代理 → ES | `%APPDATA%\com.esdsl.studio\sources.json`，不下发前端 |
+| **服务端代理** | 通过 `python server.py` 访问 | 浏览器 → 本机 Python → ES | 服务端 `data/sources.json`，不下发浏览器 |
+| **浏览器直连** | 直接双击 `web/index.html` | 浏览器 → ES | 本机 localStorage，需要 ES 开 CORS |
 
 直连模式适合临时用一下；正式使用请走服务端代理，既绕开 CORS，也不把密码摊在浏览器里。
 
@@ -181,20 +213,32 @@ PORT=8080 ESDSL_TOKEN=my-secret python server.py
 
 ```
 es-dsl-editor/
-├── index.html              # 页面骨架（查询构建 / 索引管理两个视图）
-├── css/
-│   └── styles.css          # 全部样式（浅色主题）
-├── js/
-│   ├── queries.js          # 核心：56 种查询类型定义 + 树↔DSL 双向转换 + 校验（纯逻辑，无 DOM）
-│   ├── app.js              # UI：元素库 / 拖拽 / 查询树 / 属性面板 / JSON 预览 / 执行结果抽屉
-│   ├── es-client.js        # ES 通信层：服务端代理 / 浏览器直连双模式 + mapping 扁平化等纯函数
-│   └── index-browser.js    # 索引管理视图：数据源树 / 索引树 / 详情页签 / 删除确认
-├── server.py               # Python 标准库后端：静态文件 + ES 反向代理 + 数据源管理
-├── data/                   # 运行时生成：sources.json（明文凭据，勿提交）
+├── web/                      # 纯前端（零构建，桌面版 frontendDist 指向它）
+│   ├── index.html            # 页面骨架（查询构建 / 索引管理两个视图）
+│   ├── css/
+│   │   └── styles.css        # 全部样式（浅色主题）
+│   └── js/
+│       ├── queries.js        # 核心：56 种查询类型定义 + 树↔DSL 双向转换 + 校验（纯逻辑，无 DOM）
+│       ├── app.js            # UI：元素库 / 拖拽 / 查询树 / 属性面板 / JSON 预览 / 执行结果抽屉
+│       ├── es-client.js      # ES 通信层：服务端代理 / 浏览器直连双模式 + mapping 扁平化等纯函数
+│       ├── col-picker.js     # 「选择列」浮层（偏好按索引记忆）
+│       └── index-browser.js  # 索引管理视图：数据源树 / 索引树 / 详情页签 / 删除确认
+├── src-tauri/                # 桌面版：Rust 后端（Tauri v2，无 Python 依赖）
+│   ├── src/
+│   │   ├── lib.rs            # 入口：注册 esdsl:// 协议 + 启动
+│   │   ├── proto.rs          # 自定义协议：/api/* → API，其余 → 前端静态资源
+│   │   ├── api.rs            # /api 路由（与 server.py 对齐）
+│   │   ├── es.rs             # ES 代理（reqwest + Windows SChannel TLS）
+│   │   └── store.rs          # 数据源 CRUD + sources.json 原子持久化
+│   ├── tauri.conf.json       # 窗口 / 打包 / 协议配置
+│   └── icons/                # 应用图标
+├── server.py                 # Python 标准库后端（网页版用）：静态文件 + ES 反向代理 + 数据源管理
+├── data/                     # 运行时生成：sources.json（明文凭据，勿提交）
 ├── test/
-│   ├── core.test.js        # 核心逻辑回归（24 项：生成 + 导入往返 + 校验）
-│   └── datasource.test.js  # 通信层与结果整形回归（78 项：mapping 扁平化、认证头、文档展平、聚合拍平…）
-├── docs/                   # README 截图
+│   ├── core.test.js          # 核心逻辑回归（24 项：生成 + 导入往返 + 校验）
+│   └── datasource.test.js    # 通信层与结果整形回归（78 项：mapping 扁平化、认证头、文档展平、聚合拍平…）
+├── docs/                     # README 截图
+├── package.json              # 仅开发用：Tauri CLI + scripts（dev / build）
 └── README.md
 ```
 
@@ -227,7 +271,7 @@ def({
 
 ### 新增一种数据源认证方式
 
-在 `js/es-client.js` 的 `AUTH_TYPES` / `authHeaders()` 与 `server.py` 的 `es_request()` 里各加一段即可，两边保持一致。
+在 `js/es-client.js` 的 `AUTH_TYPES` / `authHeaders()` 与后端各加一段即可，两边保持一致：Python 版改 `server.py` 的 `es_request()`，桌面版改 `src-tauri/src/es.rs` 的 `es_request()`。
 
 ## 浏览器兼容
 

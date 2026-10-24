@@ -448,6 +448,35 @@
     return out;
   }
 
+  // 顶层指标聚合卡片：单值（avg/sum/min/max/cardinality/value_count）与
+  // 多值（stats/extended_stats 平铺数值键、percentiles 的 values 映射）
+  // -> [{ name, values: [{k, v}] }]；桶聚合不进这里（走表格）
+  function aggMetricList(aggs) {
+    const out = [];
+    if (!aggs || typeof aggs !== 'object' || Array.isArray(aggs)) return out;
+    Object.keys(aggs).forEach((name) => {
+      const a = aggs[name];
+      if (!a || typeof a !== 'object' || Array.isArray(a) || a.buckets !== undefined) return;
+      const values = [];
+      if ('value' in a) {
+        const v = (a.value_as_string !== undefined && a.value_as_string !== null) ? a.value_as_string : a.value;
+        values.push({ k: 'value', v: v });
+      } else if (a.values && typeof a.values === 'object' && !Array.isArray(a.values)) {
+        // percentiles：{ values: { "1.0": 12, "50.0": 88 } }
+        Object.keys(a.values).forEach((k) => values.push({ k: 'P' + k, v: a.values[k] }));
+      } else {
+        // stats / extended_stats：平铺的数值键
+        Object.keys(a).forEach((k) => {
+          if (k === 'meta') return;
+          const v = a[k];
+          if (typeof v === 'number' || typeof v === 'string') values.push({ k, v });
+        });
+      }
+      if (values.length) out.push({ name, values });
+    });
+    return out;
+  }
+
   /* ---------------- 数据源存储 ---------------- */
   function loadLocal() {
     try {
@@ -556,6 +585,7 @@
     cellText,
     flattenDoc,
     aggRows,
+    aggMetricList,
     // 服务端健康检查（供 UI 展示）
     health: () => api('/api/health'),
   };
