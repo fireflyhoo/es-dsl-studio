@@ -962,6 +962,14 @@
           renderTree();
           renderAggsPanel();
           renderInspector();
+          // 双击节点：选中并「弹出」属性面板（收起状态自动展开，焦点落到第一个字段）。
+          // 注意：不能监听 dblclick——单击已把树整体重绘，dblclick 的两次点击目标
+          // 对不上、事件只会落在容器上；第二次 click 的 e.detail === 2 才是可靠信号。
+          if (e.detail >= 2) {
+            if (inspPanel.classList.contains('collapsed')) setInspCollapsed(false);
+            const first = $('#inspector input, #inspector select, #inspector textarea');
+            if (first) first.focus();
+          }
         }
       });
     }
@@ -1072,18 +1080,22 @@
 
     // 属性面板折叠：收起只剩标题栏（记住原高度，展开后恢复）
     const inspPanel = $('#inspector-panel');
+    const INSP_DEFAULT_H = 225; // 与 CSS 默认高度保持一致
     let inspH = 0;
-    $('#btn-insp-toggle').addEventListener('click', () => {
-      const collapsed = inspPanel.classList.toggle('collapsed');
-      if (collapsed) {
-        inspH = inspPanel.offsetHeight || 300;
+    function setInspCollapsed(collapsed) {
+      const isCollapsed = inspPanel.classList.toggle('collapsed', !!collapsed);
+      if (isCollapsed) {
+        inspH = inspPanel.offsetHeight || INSP_DEFAULT_H;
         inspPanel.style.height = 'auto';
         $('#insp-resizer').hidden = true; // 折叠时不给拖
       } else {
-        inspPanel.style.height = (inspH || 300) + 'px';
+        inspPanel.style.height = (inspH || INSP_DEFAULT_H) + 'px';
         $('#insp-resizer').hidden = false;
       }
-      $('#btn-insp-toggle').title = collapsed ? '展开属性面板' : '收起属性面板';
+      $('#btn-insp-toggle').title = isCollapsed ? '展开属性面板' : '收起属性面板';
+    }
+    $('#btn-insp-toggle').addEventListener('click', () => {
+      setInspCollapsed(!inspPanel.classList.contains('collapsed'));
     });
 
     // 聚合统计区折叠：只藏聚合树，标题栏与「新建聚合区」仍在
