@@ -1,1 +1,18 @@
 .workbuddy
+
+# 数据源配置里有明文密码 / API Key，绝不能进版本库
+data/*
+!data/.gitkeep
+
+# Python 运行产物
+__pycache__/
+*.pyc
+
+# 本地验证脚本与临时文件
+.verify/
+
+# 桌面版（Tauri）产物
+node_modules/
+src-tauri/target/
+src-tauri/gen/
+generated-images/
