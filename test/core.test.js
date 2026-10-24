@@ -1,5 +1,5 @@
 /* 核心逻辑冒烟测试：构建树 -> 生成 DSL -> 导入 -> 再生成，比对一致性 */
-const Q = require('../js/queries.js');
+const Q = require('../web/js/queries.js');
 
 let failed = 0;
 // 键序无关的规范化比较

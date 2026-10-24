@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ES DSL Studio · Elasticsearch 可视化查询编辑器</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- 顶栏 -->
+  <header id="topbar">
+    <div class="logo">{&nbsp;}</div>
+    <div class="title">
+      <b>ES DSL Studio</b>
+      <span>Elasticsearch 可视化查询编辑器 · 拖出来就是 DSL</span>
+    </div>
+
+    <div class="viewswitch" id="viewswitch">
+      <button data-view="query" class="on">查询构建</button>
+      <button data-view="index">索引管理</button>
+    </div>
+
+    <!-- 运行目标：数据源 + 索引（与查询树的「当前索引」联动） -->
+    <div id="run-bar" title="查询目标：选好数据源和索引，字段联想与运行都指向它">
+      <span class="rb-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5"/><path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3"/></svg>
+      </span>
+      <label class="tb-fld">
+        <span class="tb-k">数据源</span>
+        <span class="ctl ctl-sel">
+          <select id="rs-source"></select>
+          <button type="button" class="ctl-x" id="rs-source-x" title="不选数据源">✕</button>
+        </span>
+      </label>
+      <span class="rb-sep" aria-hidden="true"></span>
+      <label class="tb-fld">
+        <span class="tb-k">索引</span>
+        <span class="ctl ctl-ix" id="rs-index-ctl">
+          <input id="rs-index" placeholder="如 products 或 a,b" autocomplete="off" spellcheck="false">
+          <button type="button" class="ctl-x" id="rs-index-x" title="清空索引名">✕</button>
+          <button type="button" class="ctl-dd" id="rs-index-dd" title="浏览索引列表">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+          </button>
+          <span class="ctl-spin" aria-hidden="true"></span>
+        </span>
+      </label>
+    </div>
+
+    <div class="spacer"></div>
+
+    <div id="query-actions">
+      <button class="btn" id="btn-sample-top" title="新建一个空的 bool 查询">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+        新建
+      </button>
+      <button class="btn" id="btn-import" title="把已有 DSL JSON 反向解析成查询树">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+        导入 JSON
+      </button>
+      <button class="btn primary" id="btn-run" title="用生成的 DSL 直接查 ES（Ctrl+Enter）">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 4 20 12 6 20"/></svg>
+        <span class="btn-spin" aria-hidden="true"></span>
+        运行
+      </button>
+      <button class="btn" id="btn-copy" title="复制生成的 DSL">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        复制
+      </button>
+      <button class="btn danger" id="btn-clear" title="清空画布">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>
+        清空
+      </button>
+    </div>
+  </header>
+
+  <!-- ================= 查询构建视图 ================= -->
+  <div id="main">
+
+    <!-- 左：查询元素库 -->
+    <aside class="panel" id="palette">
+      <div class="panel-h">查询元素库 <span class="sub">拖到右侧画布</span></div>
+      <div class="search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+        <input id="palette-search" type="text" placeholder="搜索查询类型，如 match / 范围…">
+      </div>
+      <div id="palette-list"></div>
+    </aside>
+
+    <!-- 中：查询树画布 + 底部属性面板 -->
+    <section class="panel" id="canvas-panel">
+      <div id="canvas-toolbar">
+        <span class="lbl">查询树</span>
+        <span id="active-index-chip" class="active-chip" hidden></span>
+        <span class="sub" style="color:var(--muted);font-size:12px">点选节点编辑参数 · 拖动节点调整结构</span>
+      </div>
+      <div id="tree"></div>
+      <!-- 聚合统计区：与查询树并列，产出 body.aggs -->
+      <div id="aggs-sec">
+        <div id="aggs-sec-h">
+          <span class="lbl">聚合统计</span>
+          <span class="sub">aggs · 指标 / 桶聚合，桶里可嵌套子聚合</span>
+          <span class="spacer"></span>
+          <span id="aggs-count"></span>
+          <button class="btn sm" id="btn-aggs-add" title="在画布下方创建聚合区">+ 新建聚合区</button>
+        </div>
+        <div id="aggs-tree"></div>
+      </div>
+      <div id="insp-resizer" title="拖拽调整属性面板高度"></div>
+      <div id="inspector-panel">
+        <div class="panel-h">节点属性 <span class="sub" id="insp-sub">未选中节点</span></div>
+        <div id="inspector"></div>
+      </div>
+      <div id="statusbar"></div>
+    </section>
+
+    <!-- 右：DSL JSON -->
+    <aside class="panel">
+      <div class="panel-h">DSL JSON <span class="sub">实时生成 · 可直接复制使用</span></div>
+      <div id="json-toolbar">
+        <span class="set">size <input id="set-size" value="10"></span>
+        <span class="set">from <input id="set-from" placeholder="0"></span>
+        <span class="set">total_hits
+          <select id="set-tth"><option value="true">true</option><option value="false">false</option></select>
+        </span>
+        <span class="set">min_score <input id="set-minscore" placeholder="—"></span>
+        <span class="set ex" id="extra-note" hidden></span>
+        <span style="flex:1"></span>
+        <button class="btn sm" id="btn-copy2">复制</button>
+        <button class="btn sm" id="btn-download">下载</button>
+      </div>
+      <div id="json-warn"></div>
+      <div id="json-out"></div>
+    </aside>
+
+  </div>
+
+  <!-- ================= 查询结果抽屉 ================= -->
+  <div id="rs-resizer" hidden title="拖拽调整结果区高度"></div>
+  <section class="panel" id="result-drawer" hidden>
+    <div class="panel-h">
+      <span>查询结果</span>
+      <span class="sub" id="rs-target">—</span>
+      <span class="spacer"></span>
+      <button class="btn sm" id="rs-copy">复制 JSON</button>
+      <button class="btn sm" id="rs-csv">导出 CSV</button>
+      <button class="icon-btn x" id="rs-close" title="关闭">✕</button>
+    </div>
+    <div id="rs-status"></div>
+    <div class="idx-tabs" id="rs-tabs">
+      <button data-tab="table" class="on">表格</button>
+      <button data-tab="aggs">聚合</button>
+      <button data-tab="req">请求体</button>
+      <button data-tab="raw">原始响应</button>
+      <span style="flex:1"></span>
+      <button class="btn sm" id="rs-cols" title="选择表格展示哪些列（按索引记忆）" hidden>选择列</button>
+    </div>
+    <div id="rs-body"></div>
+  </section>
+
+  <!-- ================= 索引管理视图 ================= -->
+  <div id="index-app">
+    <div id="idx-main">
+
+      <aside class="panel" id="ds-panel">
+        <div class="panel-h">
+          数据源 <span class="sub">多集群 · 树形浏览</span>
+          <span class="spacer"></span>
+          <span id="idx-mode-badge" class="mode-badge"></span>
+          <button class="btn sm" id="btn-refresh-all" title="刷新全部数据源">刷新</button>
+          <button class="btn sm primary" id="btn-add-ds">+ 新增</button>
+        </div>
+        <div class="idx-search-row">
+          <div class="search">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+            <input id="idx-search" type="text" placeholder="搜索索引或字段…">
+          </div>
+          <label class="chk" title="默认隐藏以点开头的系统索引"><input type="checkbox" id="idx-system-toggle"><span>系统索引</span></label>
+        </div>
+        <div id="idx-tree"></div>
+      </aside>
+
+      <section class="panel" id="idx-detail">
+        <div id="idx-empty" class="idx-empty">
+          <div class="big">选择一个索引</div>
+          <div>从左侧展开数据源，点选索引查看结构与样本数据</div>
+          <div class="mono dim">多集群 · 字段检索 · 分词器 · 别名 · 样本预览</div>
+        </div>
+
+        <div id="idx-content" hidden>
+          <div id="idx-head">
+            <div class="idx-headline">
+              <span id="idx-title-name" class="idx-big-name"></span>
+              <span id="idx-title-health" class="hbadge"></span>
+            </div>
+            <div id="idx-sub" class="idx-sub"></div>
+            <div id="idx-acts" class="idx-acts">
+              <button class="btn sm" data-act="refresh">刷新</button>
+              <button class="btn sm" data-act="copy-name">复制索引名</button>
+              <button class="btn sm" data-act="copy-path">复制 _search</button>
+              <button class="btn sm" data-act="use-fields">用字段构建查询</button>
+              <button class="btn sm danger" data-act="delete">删除索引</button>
+            </div>
+          </div>
+          <div class="idx-tabs" id="idx-tabs">
+            <button data-tab="overview" class="on">概览</button>
+            <button data-tab="fields">字段映射</button>
+            <button data-tab="settings">设置</button>
+            <button data-tab="aliases">别名</button>
+            <button data-tab="sample">样本数据</button>
+            <button data-tab="raw">原始响应</button>
+          </div>
+          <div id="idx-body"></div>
+        </div>
+      </section>
+
+    </div>
+  </div>
+
+</div>
+
+<!-- 导入弹窗 -->
+<div id="modal-mask">
+  <div id="modal">
+    <div class="m-h">导入 DSL JSON
+      <button class="icon-btn x" id="m-cancel" title="关闭">✕</button>
+    </div>
+    <div class="m-b">
+      <textarea id="m-text" rows="14" spellcheck="false" placeholder='粘贴完整 search body 或 query 片段，例如：
+{
+  "query": {
+    "bool": {
+      "must": [{ "match": { "title": "手机" } }]
+    }
+  }
+}'></textarea>
+      <div class="m-err" id="m-err"></div>
+    </div>
+    <div class="m-f">
+      <button class="btn" id="m-cancel2" onclick="document.getElementById('m-cancel').click()">取消</button>
+      <button class="btn primary" id="m-ok">解析为查询树</button>
+    </div>
+  </div>
+</div>
+
+<!-- 数据源弹窗 -->
+<div id="ds-mask" class="mask">
+  <div id="ds-modal">
+    <div class="m-h"><span id="ds-title">数据源</span>
+      <button class="icon-btn x" id="ds-cancel" title="关闭">✕</button>
+    </div>
+    <div class="m-b" id="ds-form">
+      <div class="form-grid">
+        <label>名称 <span class="req">*</span><input id="ds-name" placeholder="如：生产集群" autocomplete="off"></label>
+        <label>地址 <span class="req">*</span><input id="ds-url" placeholder="http://localhost:9200" autocomplete="off"></label>
+      </div>
+      <label>认证方式
+        <select id="ds-auth">
+          <option value="none">无认证</option>
+          <option value="basic">用户名 / 密码</option>
+          <option value="apikey">API Key</option>
+          <option value="bearer">Bearer Token</option>
+        </select>
+      </label>
+      <div class="form-grid" data-auth="basic" hidden>
+        <label>用户名<input id="ds-user" autocomplete="off"></label>
+        <label>密码<input id="ds-pass" type="password" autocomplete="new-password"></label>
+      </div>
+      <label data-auth="apikey" hidden>API Key<input id="ds-apikey" placeholder="base64(id:api_key)" autocomplete="off"></label>
+      <label data-auth="bearer" hidden>Token<input id="ds-bearer" autocomplete="off"></label>
+
+      <div class="form-checks">
+        <label class="chk"><input type="checkbox" id="ds-insecure"><span>忽略 HTTPS 证书校验（自签集群）</span></label>
+        <label class="chk"><input type="checkbox" id="ds-readonly"><span>只读模式（禁止删除索引）</span></label>
+      </div>
+
+      <div id="ds-test-result" class="ds-test-result"></div>
+      <div class="form-note" id="ds-secret-note">凭据只保存在服务端 <code>data/sources.json</code>，不会下发到浏览器。</div>
+    </div>
+    <div class="m-f">
+      <button class="btn" id="ds-test">测试连接</button>
+      <span style="flex:1"></span>
+      <button class="btn" id="ds-cancel2" onclick="document.getElementById('ds-cancel').click()">取消</button>
+      <button class="btn primary" id="ds-save">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 确认弹窗 -->
+<div id="confirm-mask" class="mask">
+  <div id="confirm-modal">
+    <div class="m-h"><span id="confirm-title">确认</span></div>
+    <div class="m-b">
+      <div id="confirm-desc" class="confirm-desc"></div>
+      <div id="confirm-input-wrap" hidden>
+        <input id="confirm-input" class="confirm-input" autocomplete="off" spellcheck="false">
+      </div>
+    </div>
+    <div class="m-f">
+      <button class="btn" id="confirm-cancel">取消</button>
+      <button class="btn danger" id="confirm-ok">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- 访问令牌弹窗 -->
+<div id="token-mask" class="mask">
+  <div id="token-modal">
+    <div class="m-h"><span>访问令牌</span></div>
+    <div class="m-b">
+      <div class="confirm-desc">服务端设置了 <code>ESDSL_TOKEN</code>，请输入访问令牌后再操作。</div>
+      <input id="token-input" class="confirm-input" placeholder="访问令牌" autocomplete="off">
+    </div>
+    <div class="m-f">
+      <button class="btn" id="token-cancel">取消</button>
+      <button class="btn primary" id="token-save">保存</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script src="js/queries.js"></script>
+<script src="js/es-client.js"></script>
+<script src="js/col-picker.js"></script>
+<script src="js/app.js"></script>
+<script src="js/index-browser.js"></script>
+</body>
+</html>

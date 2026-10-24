@@ -9,6 +9,7 @@
   /* ---------------- 分类 ---------------- */
   const CATS = [
     { id: 'compound', label: '组合查询',   en: 'Compound',        color: '#ea580c' },
+    { id: 'agg',      label: '聚合统计',   en: 'Aggregations',    color: '#7c3aed' },
     { id: 'fulltext', label: '全文检索',   en: 'Full text',       color: '#0d9488' },
     { id: 'termq',    label: '词项查询',   en: 'Term level',      color: '#2563eb' },
     { id: 'geo',      label: '地理位置',   en: 'Geo',             color: '#16a34a' },
@@ -1150,6 +1151,269 @@
     summary(n) { return (n.params.kind || 'gauss') + '(' + (n.params.field || '?') + ')'; },
   });
 
+  /* ===== 聚合统计（body.aggs） =====
+   * 结构：body.aggs = { <名称>: { <agg类型>: {…}, aggs?: { <子聚合名>: … } } }
+   * 指标聚合产出 value；桶聚合产出 buckets，桶里可再嵌子聚合。 */
+  const AGG_COLOR = '#7c3aed';
+  const AGGF_NAME = F('name', '聚合名称 *', 'text', { req: true, ph: '如 avg_price' });
+  const AGG_SUB = [{ key: 'sub', label: '子聚合 · 可继续嵌套（可选）', multi: true, color: AGG_COLOR, accept: 'agg' }];
+
+  // 子聚合映射：{ <名称>: <聚合体> }
+  function aggSubMap(n) {
+    const o = {};
+    ((n.kids && n.kids.sub) || []).forEach((k) => {
+      const g = gen(k);
+      if (g) o[k.params.name || '?agg?'] = g;
+    });
+    return Object.keys(o).length ? o : null;
+  }
+
+  // order 文本 "key dir" -> { key: 'asc'|'desc' }（省略 dir 时 _key 默认 asc，其余 desc）
+  function parseOrder(v) {
+    const t = String(v || '').trim();
+    if (!t) return undefined;
+    const parts = t.split(/\s+/);
+    const key = parts[0];
+    const dir = (parts[1] || (key === '_key' ? 'asc' : 'desc')).toLowerCase();
+    return { [key]: dir === 'asc' ? 'asc' : 'desc' };
+  }
+
+  // 通用聚合体构建：标量参数进 inner；percents 转数组；order 解析；ranges 解析 JSON；
+  // filters 的聚合体本身就是「名称 -> 过滤」映射表，直接作为 inner
+  function aggBuild(n) {
+    let inner = {};
+    let filtersMap = null;
+    for (const k of Object.keys(n.params)) {
+      if (k === 'name' || isEmpty(n.params[k])) continue;
+      if (k === 'percents') { inner.percents = csv(n.params[k]); continue; }
+      if (k === 'order') { const o = parseOrder(n.params[k]); if (o) inner.order = o; continue; }
+      if (k === 'ranges') {
+        const r = tryJSON(n.params[k], null);
+        if (Array.isArray(r) && r.length) inner.ranges = r;
+        continue;
+      }
+      if (k === 'filters') {
+        const f = tryJSON(n.params[k], null);
+        if (f && typeof f === 'object' && !Array.isArray(f)) filtersMap = f;
+        continue;
+      }
+      inner[k] = coerce(n.params[k]);
+    }
+    if (filtersMap) inner = filtersMap;
+    // 字段缺失时给占位符，与查询侧 "?field?" 约定一致
+    for (const fk of ['field', 'path']) {
+      if (fk in n.params && isEmpty(n.params[fk])) inner[fk] = '?' + fk + '?';
+    }
+    // DSL 键名去掉 agg_ 前缀：agg_terms -> terms
+    const body = { [n.type.replace(/^agg_/, '')]: inner };
+    const sub = aggSubMap(n);
+    if (sub) body.aggs = sub;
+    return body;
+  }
+
+  // 通用聚合体反向解析
+  function aggFrom(body, n) {
+    for (const k of Object.keys(body || {})) {
+      if (k === 'aggs') continue;
+      const v = body[k];
+      if (Array.isArray(v)) n.params[k] = (k === 'percents' ? v.join(', ') : JSON.stringify(v));
+      else if (v !== null && typeof v === 'object') n.params[k] = JSON.stringify(v);
+      else n.params[k] = String(v);
+    }
+  }
+
+  function aggSummary(n) {
+    const p = n.params;
+    const seg = [p.field || p.path || p.value_field || ''].filter(Boolean);
+    if (p.size) seg.push('size=' + p.size);
+    if (p.interval) seg.push('interval=' + p.interval);
+    return seg.join(' · ');
+  }
+
+  function aggNode(type, cn, desc, fields, extra) {
+    def(Object.assign({
+      type, cat: 'agg', cn, desc,
+      fields: [AGGF_NAME].concat(fields || []),
+      slots: AGG_SUB,
+      build: aggBuild, fromJson: aggFrom,
+      summary: aggSummary,
+    }, extra || {}));
+  }
+
+  /* ---- 指标聚合 ---- */
+  aggNode('agg_avg', '平均值', '对数值字段求平均（avg）。',
+    [F('field', '字段 *', 'text', { req: true, ph: '如 price' }), F('missing', 'missing 缺省值', 'number')]);
+  aggNode('agg_sum', '求和', '对数值字段求和（sum），如总销售额。',
+    [F('field', '字段 *', 'text', { req: true }), F('missing', 'missing 缺省值', 'number')]);
+  aggNode('agg_min', '最小值', '取数值字段最小值（min）。',
+    [F('field', '字段 *', 'text', { req: true }), F('missing', 'missing 缺省值', 'number')]);
+  aggNode('agg_max', '最大值', '取数值字段最大值（max）。',
+    [F('field', '字段 *', 'text', { req: true }), F('missing', 'missing 缺省值', 'number')]);
+  aggNode('agg_cardinality', '去重计数', '统计字段去重后的不同值个数（约等，基于 HLL）。',
+    [F('field', '字段 *', 'text', { req: true }), F('precision_threshold', 'precision_threshold', 'number', { ph: '3000' }), F('missing', 'missing 缺省值', 'number')]);
+  aggNode('agg_value_count', '值计数', '统计字段有值的文档数（value_count）。',
+    [F('field', '字段 *', 'text', { req: true })]);
+  aggNode('agg_stats', '统计', '一次拿到 count / min / max / avg / sum。',
+    [F('field', '字段 *', 'text', { req: true })]);
+  aggNode('agg_extended_stats', '扩展统计', '在 stats 基础上加标准差、方差等（sigma）。',
+    [F('field', '字段 *', 'text', { req: true }), F('sigma', 'sigma', 'number', { ph: '2' })]);
+  aggNode('agg_percentiles', '百分位', '统计 P1 / P50 / P99 等分位值，看长尾分布。',
+    [F('field', '字段 *', 'text', { req: true }),
+     F('percents', '分位点（逗号分隔）', 'text', { ph: '1, 5, 25, 50, 75, 95, 99' }),
+     F('keyed', 'keyed 按键输出', 'checkbox'), F('missing', 'missing 缺省值', 'number')]);
+
+  def({
+    type: 'agg_weighted_avg', cat: 'agg', cn: '加权平均',
+    desc: '按权重字段做加权平均，如库存加权均价。',
+    fields: [AGGF_NAME,
+      F('value_field', '值字段 *', 'text', { req: true, ph: 'price' }),
+      F('value_factor', '值系数', 'number', { ph: '1.2' }),
+      F('weight_field', '权重字段 *', 'text', { req: true, ph: 'stock' }),
+    ],
+    slots: AGG_SUB,
+    build(n) {
+      const inner = {
+        value: { field: isEmpty(n.params.value_field) ? '?field?' : n.params.value_field },
+        weight: { field: isEmpty(n.params.weight_field) ? '?field?' : n.params.weight_field },
+      };
+      if (!isEmpty(n.params.value_factor)) inner.value.factor = coerce(n.params.value_factor);
+      const body = { weighted_avg: inner };
+      const sub = aggSubMap(n);
+      if (sub) body.aggs = sub;
+      return body;
+    },
+    fromJson(body, n) {
+      const v = body.value || {}, w = body.weight || {};
+      n.params.value_field = v.field || '';
+      n.params.value_factor = v.factor !== undefined ? String(v.factor) : '';
+      n.params.weight_field = w.field || '';
+    },
+    summary(n) { return (n.params.value_field || '?') + ' × ' + (n.params.weight_field || '?'); },
+  });
+
+  /* ---- 桶聚合 ---- */
+  aggNode('agg_terms', '词项分组', '按字段值分桶统计文档数，最常用的分组聚合。',
+    [F('field', '字段 *', 'text', { req: true, ph: '如 status.keyword' }),
+     F('size', 'size 桶数', 'number', { ph: '10' }),
+     F('order', 'order 排序', 'text', { ph: '_count desc 或 avg_price desc' }),
+     F('min_doc_count', 'min_doc_count', 'number', { ph: '1' }),
+     F('missing', 'missing 缺省桶', 'text')]);
+  aggNode('agg_date_histogram', '日期直方图', '按时间间隔分桶，适合按天 / 小时趋势统计（interval 兼容 ES 6.x / 7.x / 8.x）。',
+    [F('field', '日期字段 *', 'text', { req: true, ph: '如 @timestamp' }),
+     F('interval', 'interval 间隔 *', 'text', { def: '1d', req: true, ph: '1d / 1h / 30m / day / week / month' }),
+     F('format', 'format 键格式', 'text', { ph: 'yyyy-MM-dd' }),
+     F('time_zone', 'time_zone', 'text', { ph: '+08:00' }),
+     F('min_doc_count', 'min_doc_count', 'number')]);
+  aggNode('agg_histogram', '数值直方图', '按固定数值间隔分桶，适合价格 / 年龄分布。',
+    [F('field', '数值字段 *', 'text', { req: true }),
+     F('interval', 'interval 间隔 *', 'number', { req: true, ph: '100' }),
+     F('min_doc_count', 'min_doc_count', 'number')]);
+  aggNode('agg_range', '范围分组', '按自定义 from / to 范围分桶（左闭右开）。',
+    [F('field', '字段 *', 'text', { req: true }),
+     F('ranges', 'ranges 范围 *', 'json', { req: true, rows: 3, ph: '[{"to":100},{"from":100,"to":500},{"from":500}]' })]);
+  aggNode('agg_date_range', '日期范围分组', '按日期范围分桶，支持 now-7d 等日期数学表达式。',
+    [F('field', '日期字段 *', 'text', { req: true }),
+     F('format', 'format 键格式', 'text', { ph: 'yyyy-MM-dd' }),
+     F('time_zone', 'time_zone', 'text', { ph: '+08:00' }),
+     F('ranges', 'ranges 范围 *', 'json', { req: true, rows: 3, ph: '[{"to":"now-7d"},{"from":"now-7d","to":"now"}]' })]);
+  aggNode('agg_filters', '多过滤聚合', '一组命名过滤各自统计文档数，适合错误码分布。',
+    [F('filters', 'filters *', 'json', { req: true, rows: 4, ph: '{"错误":{"term":{"level":"error"}},"警告":{"term":{"level":"warn"}}}' })]);
+  aggNode('agg_nested', '嵌套对象聚合', '进入 nested 类型字段内部做聚合。',
+    [F('path', 'nested 路径 *', 'text', { req: true, ph: '如 comments' })]);
+  aggNode('agg_missing', '缺失字段分组', '统计字段缺失的文档数（固定一个桶）。',
+    [F('field', '字段 *', 'text', { req: true })]);
+  aggNode('agg_global', '全局聚合', '忽略主查询条件，对全索引文档做聚合。', []);
+
+  def({
+    type: 'agg_filter', cat: 'agg', cn: '过滤聚合',
+    desc: '对整个查询结果再套一个过滤条件的聚合，用来算子集指标。',
+    fields: [AGGF_NAME],
+    slots: [
+      { key: 'filter', label: 'filter · 过滤条件（查询节点）', multi: false, color: '#2563eb' },
+    ].concat(AGG_SUB),
+    build(n) {
+      const o = {};
+      const f = (n.kids.filter || []).map(gen).filter(Boolean)[0];
+      if (f) o.filter = f;
+      const sub = aggSubMap(n);
+      if (sub) o.aggs = sub;
+      return o;
+    },
+    fromJson(body, n) {
+      if (body.filter) n.kids.filter = [importNode(body.filter)].filter(Boolean);
+    },
+    summary(n) { return 'filter 子集'; },
+  });
+
+  /* ---- 聚合根容器与自定义 ---- */
+  def({
+    type: 'aggs', cat: 'agg', cn: '聚合统计', valueKey: null,
+    desc: '搜索请求的 aggs 字段：一组命名聚合（指标 + 桶），桶聚合里还能继续嵌子聚合。',
+    fields: [],
+    listKids: { key: 'aggs', label: '聚合列表 · 拖入聚合节点' },
+    // 直接产出 name -> 聚合体 映射，由 exportBody 挂到 body.aggs
+    build(n) {
+      const o = {};
+      (n.kids || []).forEach((k) => {
+        const g = gen(k);
+        if (g) o[k.params.name || '?agg?'] = g;
+      });
+      return o;
+    },
+    fromJson() {},
+    summary(n) { return (n.kids || []).length + ' 个聚合'; },
+  });
+
+  def({
+    type: 'agg_raw', cat: 'agg', cn: '自定义聚合 JSON', valueKey: null,
+    desc: '直接编写聚合体 JSON（未内置的聚合类型），原样输出。',
+    fields: [AGGF_NAME,
+      F('json', '聚合体 JSON *', 'json', { req: true, rows: 6, ph: '{"terms": {"field": "status"}}' })],
+    leaf: true,
+    build(n) { return tryJSON(n.params.json, {}) || {}; },
+    fromJson() {},
+    summary(n) { return String(n.params.json || '').replace(/\s+/g, ' ').slice(0, 40); },
+  });
+
+  /* ---- aggs JSON -> 聚合树 ---- */
+  function importAggs(map) {
+    if (!map || typeof map !== 'object' || Array.isArray(map)) return null;
+    const container = mkNode('aggs');
+    Object.keys(map).forEach((name) => {
+      const node = importAggEntry(name, map[name]);
+      if (node) container.kids.push(node);
+    });
+    return container.kids.length ? container : null;
+  }
+
+  function importAggEntry(name, entry) {
+    const raw = () => {
+      const n = mkNode('agg_raw');
+      n.params.name = name;
+      n.params.json = JSON.stringify(entry, null, 2);
+      return n;
+    };
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+    const keys = Object.keys(entry).filter((k) => k !== 'aggs');
+    // DSL 键名 -> 节点类型：terms -> agg_terms（ DEFS 的键带 agg_ 前缀）
+    const d = keys.length === 1 ? DEFS['agg_' + keys[0]] : null;
+    if (!d || d.cat !== 'agg' || !d.fromJson || typeof entry[keys[0]] !== 'object' || entry[keys[0]] === null) {
+      return raw();
+    }
+    const n = mkNode(d.type);
+    n.params.name = name;
+    try {
+      d.fromJson(entry[keys[0]], n);
+      if (entry.aggs) {
+        const sub = importAggs(entry.aggs);
+        if (sub) n.kids.sub = sub.kids;
+      }
+    } catch (e) {
+      return raw();
+    }
+    return n;
+  }
+
   /* ===== 自定义 ===== */
   def({
     type: 'raw', cat: 'custom', cn: '自定义 JSON',
@@ -1232,12 +1496,15 @@
   }
 
   /* ---------------- 校验 ---------------- */
-  function validate(root) {
+  // basePath：query 树传 'query'，聚合树传 'aggs'
+  function validate(root, basePath) {
     const issues = [];
+    basePath = basePath || 'query';
     function walk(node, path) {
       const d = DEFS[node.type];
       if (!d) return;
-      const label = path + ' / ' + node.type;
+      const label = path + (node.type === 'aggs' ? '' :
+        ' / ' + (d.cat === 'agg' ? (node.params.name || node.type) : node.type));
       for (const f of d.fields) {
         if (f.req && isEmpty(node.params[f.k])) {
           issues.push(label + '：缺少必填项「' + f.label.replace(/ \*$/, '') + '」');
@@ -1246,6 +1513,16 @@
           try { JSON.parse(node.params[f.k]); }
           catch (e) { issues.push(label + '：「' + f.label + '」不是合法 JSON'); }
         }
+      }
+      if (d.validateNode) {
+        try { d.validateNode(node, label, issues); } catch (e) { /* 忽略校验钩子异常 */ }
+      }
+      // 聚合同名检查（同一层里两个同名聚合会互相覆盖）
+      if (node.type === 'aggs' || d.cat === 'agg') {
+        const aggKids = node.type === 'aggs' ? (node.kids || []) : ((node.kids && node.kids.sub) || []);
+        const names = aggKids.map((k) => k.params && k.params.name).filter(Boolean);
+        const dups = names.filter((nm, i) => names.indexOf(nm) !== i).filter((v, i, a) => a.indexOf(v) === i);
+        if (dups.length) issues.push(label + '：聚合名称重复「' + dups.join('、') + '」');
       }
       if (d.slots) {
         for (const s of d.slots) {
@@ -1259,13 +1536,13 @@
         if (total === 0) issues.push(label + '：bool 四个子句都为空');
       }
     }
-    if (root) walk(root, 'query');
+    if (root) walk(root, basePath);
     return issues;
   }
 
   /* ---------------- 导出 ---------------- */
   const api = {
-    CATS, CATMAP, DEFS, mkNode, gen, importNode, validate,
+    CATS, CATMAP, DEFS, mkNode, gen, importNode, importAggs, validate,
     uid, isEmpty, coerce, csv, tryJSON,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
