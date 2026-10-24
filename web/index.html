@@ -31,8 +31,12 @@
       </span>
       <label class="tb-fld">
         <span class="tb-k">数据源</span>
-        <span class="ctl ctl-sel">
-          <select id="rs-source"></select>
+        <span class="ctl ctl-src" id="rs-source-ctl">
+          <button type="button" class="ctl-src-btn" id="rs-source-trigger" title="选择数据源">
+            <span class="ctl-src-val" id="rs-source-val">（未选择）</span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+          </button>
+          <select id="rs-source" class="sr-only" aria-hidden="true" tabindex="-1"></select>
           <button type="button" class="ctl-x" id="rs-source-x" title="不选数据源">✕</button>
         </span>
       </label>
@@ -97,21 +101,31 @@
         <span id="active-index-chip" class="active-chip" hidden></span>
         <span class="sub" style="color:var(--muted);font-size:12px">点选节点编辑参数 · 拖动节点调整结构</span>
       </div>
-      <div id="tree"></div>
-      <!-- 聚合统计区：与查询树并列，产出 body.aggs -->
-      <div id="aggs-sec">
-        <div id="aggs-sec-h">
-          <span class="lbl">聚合统计</span>
-          <span class="sub">aggs · 指标 / 桶聚合，桶里可嵌套子聚合</span>
-          <span class="spacer"></span>
-          <span id="aggs-count"></span>
-          <button class="btn sm" id="btn-aggs-add" title="在画布下方创建聚合区">+ 新建聚合区</button>
+      <div id="tree-scroll">
+        <div id="tree"></div>
+        <!-- 聚合统计区：与查询树共用一个滚动条 -->
+        <div id="aggs-sec">
+          <div id="aggs-sec-h">
+            <span class="lbl">聚合统计</span>
+            <span class="sub">aggs · 指标 / 桶聚合，桶里可嵌套子聚合</span>
+            <span class="spacer"></span>
+            <span id="aggs-count"></span>
+            <button class="sec-toggle" id="btn-aggs-toggle" title="收起聚合统计区">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+            </button>
+            <button class="btn sm" id="btn-aggs-add" title="在画布下方创建聚合区">+ 新建聚合区</button>
+          </div>
+          <div id="aggs-tree"></div>
         </div>
-        <div id="aggs-tree"></div>
       </div>
       <div id="insp-resizer" title="拖拽调整属性面板高度"></div>
       <div id="inspector-panel">
-        <div class="panel-h">节点属性 <span class="sub" id="insp-sub">未选中节点</span></div>
+        <div class="panel-h">节点属性 <span class="sub" id="insp-sub">未选中节点</span>
+          <span class="spacer"></span>
+          <button class="sec-toggle" id="btn-insp-toggle" title="收起属性面板">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+          </button>
+        </div>
         <div id="inspector"></div>
       </div>
       <div id="statusbar"></div>

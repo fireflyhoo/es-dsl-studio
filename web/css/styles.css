@@ -202,9 +202,17 @@ body {
   flex-shrink: 0;
 }
 #canvas-toolbar .lbl { font-weight: 600; font-size: 13px; margin-right: 4px; }
-#tree {
+/* 查询树 + 聚合统计共用一个滚动条（树内容长时整列一起滚） */
+#tree-scroll {
   flex: 1;
+  min-height: 0;
   overflow: auto;
+  display: flex; flex-direction: column;
+}
+#tree {
+  flex: 1 0 auto; /* 内容少时撑满、内容多时自然增高，交给外层滚动 */
+  min-height: 0;
+  overflow: visible;
   padding: 18px;
   background:
     radial-gradient(circle, #dfe4ea 1px, transparent 1px) 0 0 / 22px 22px,
@@ -214,9 +222,7 @@ body {
 
 /* ---------- 聚合统计区（查询树下方，产出 body.aggs） ---------- */
 #aggs-sec {
-  flex-shrink: 1;
-  min-height: 0;
-  max-height: 46%;
+  flex: 0 0 auto; /* 高度随内容，滚动交给外层 #tree-scroll */
   display: flex; flex-direction: column;
   border-top: 1px solid var(--border);
   background: var(--panel);
@@ -226,20 +232,32 @@ body {
   padding: 6px 12px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+  position: sticky; top: 0; z-index: 5; /* 长列表滚动时折叠按钮不跑丢 */
+  background: var(--panel);
 }
 #aggs-sec-h .lbl { font-weight: 600; font-size: 13px; }
 #aggs-sec-h .sub { color: var(--faint); font-size: 12px; }
 #aggs-sec-h .spacer { flex: 1; }
 #aggs-count { color: var(--muted); font-size: 12px; white-space: nowrap; }
+/* 面板折叠按钮（属性面板 / 聚合统计区共用） */
+.sec-toggle {
+  width: 22px; height: 22px; flex-shrink: 0; padding: 0;
+  border: 1px solid var(--border); background: #fff; border-radius: 6px;
+  color: var(--muted); cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: all 0.12s;
+}
+.sec-toggle:hover { color: var(--accent); border-color: var(--accent); }
+.sec-toggle svg { width: 12px; height: 12px; transition: transform 0.15s ease; }
+.collapsed .sec-toggle svg { transform: rotate(-90deg); } /* 折叠后箭头朝右，示意可展开 */
+#aggs-sec.collapsed #aggs-tree { display: none; }
 #aggs-tree {
-  flex: 1;
-  overflow: auto;
+  overflow: visible;
   padding: 10px 18px 14px;
   background:
     radial-gradient(circle, #e4dcf7 1px, transparent 1px) 0 0 / 22px 22px,
     #fbfaff;
 }
-#aggs-tree .aggs-wrap { min-height: 100%; }
 #aggs-tree [data-drop="aggsroot"].hover {
   outline: 2px dashed #7c3aed; outline-offset: -4px; border-radius: 10px;
 }
@@ -398,6 +416,10 @@ body {
   background: #fff;
 }
 #inspector-panel .panel-h { border-bottom: 1px solid var(--border); padding: 8px 14px; }
+#inspector-panel .panel-h .spacer { flex: 1; }
+/* 收起状态：只剩标题栏，高度交给内容（JS 会把内联 height 置为 auto） */
+#inspector-panel.collapsed { min-height: 0; }
+#inspector-panel.collapsed #inspector { display: none; }
 #inspector { flex: 1; overflow-y: auto; padding: 10px 16px 14px; min-height: 0; }
 #inspector .fields-grid {
   display: grid;
@@ -698,6 +720,36 @@ body.view-index #query-actions { display: none; }
 .tb-fld input::placeholder { font-family: var(--sans); color: var(--faint); }
 .tb-fld .ctl.has > .ctl-x { background: transparent; color: var(--faint); }
 .tb-fld .ctl.has > .ctl-x:hover { background: var(--danger); color: #fff; }
+/* 顶栏「数据源」自绘下拉：触发器按钮 + 浮层；隐藏的原生 select 只作数据载体 */
+.ctl-src { position: relative; display: inline-flex; align-items: center; gap: 2px; }
+.ctl-src > select {
+  position: absolute; left: 0; top: 0;
+  width: 1px; height: 1px; padding: 0; margin: 0; border: 0;
+  opacity: 0; pointer-events: none;
+}
+.ctl-src > .ctl-x { position: static; transform: none; flex: none; }
+.ctl-src-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  max-width: 160px; padding: 5px 7px;
+  border: 0; border-radius: 6px; background: transparent;
+  font: 600 12.5px var(--sans); color: var(--text);
+  cursor: pointer; transition: background 0.14s ease;
+}
+.ctl-src-btn:hover { background: rgba(15, 23, 42, 0.05); }
+.ctl-src.open .ctl-src-btn { background: var(--accent-soft); color: var(--accent); }
+.ctl-src-val { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ctl-src-btn.empty .ctl-src-val { color: var(--faint); font-weight: 500; }
+.ctl-src-btn svg { width: 12px; height: 12px; flex-shrink: 0; color: var(--faint); }
+.ctl-src.open .ctl-src-btn svg { color: var(--accent); }
+.src-pop { min-width: 200px; }
+.src-item { gap: 6px; }
+.src-check { width: 14px; flex-shrink: 0; font: 700 12px/1 var(--sans); color: var(--accent); }
+.src-check.on::before { content: '✓'; }
+.src-tag {
+  flex-shrink: 0; padding: 1px 5px;
+  font: 600 10px var(--sans); color: var(--muted);
+  background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+}
 /* 顶栏「索引」：可点 ▾ 浏览完整索引列表的自绘浮层（替代丑的原生 datalist） */
 .ctl-ix { position: relative; display: inline-flex; align-items: center; gap: 2px; }
 .ctl-ix > input { flex: 0 1 205px; min-width: 60px; }
