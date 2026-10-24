@@ -170,5 +170,84 @@ eq('cellText-null', E.cellText(null), '');
 eq('cellText-对象', E.cellText({ a: 1 }), '{"a":1}');
 eq('cellText-布尔', E.cellText(false), 'false');
 
-console.log(failed === 0 ? '\n全部通过' : '\n有 ' + failed + ' 项失败');
-process.exit(failed === 0 ? 0 : 1);
+// ---- 15. 批量字段编辑 / 索引变更 DSL 纯函数 ----
+// ---- 15.1 rowToDef：表单行 → 字段定义 ----
+eq('rowToDef-默认 keyword', E.rowToDef({ name: 'soSym', type: 'keyword' }), { ok: true, def: { type: 'keyword' } });
+eq('rowToDef-text 落 analyzer', E.rowToDef({ name: 'title', type: 'text', meta: 'ik_max_word' }).def,
+  { type: 'text', analyzer: 'ik_max_word' });
+eq('rowToDef-date 落 format', E.rowToDef({ name: 'created_at', type: 'date', meta: 'yyyy-MM-dd' }).def,
+  { type: 'date', format: 'yyyy-MM-dd' });
+eq('rowToDef-keyword 落 normalizer', E.rowToDef({ name: 'code', type: 'keyword', meta: 'lowercase' }).def,
+  { type: 'keyword', normalizer: 'lowercase' });
+eq('rowToDef-其他类型忽略 meta', E.rowToDef({ name: 'age', type: 'integer', meta: 'xxx' }).def, { type: 'integer' });
+eq('rowToDef-属性 JSON 合并', E.rowToDef({ name: 'tags', type: 'keyword', props: '{"index":false,"ignore_above":64}' }).def,
+  { type: 'keyword', index: false, ignore_above: 64 });
+eq('rowToDef-空字段名报错', E.rowToDef({ name: '  ', type: 'keyword' }).ok, false);
+eq('rowToDef-非法字段名报错', E.rowToDef({ name: '1abc', type: 'keyword' }).ok, false);
+eq('rowToDef-点号字段名合法', E.rowToDef({ name: 'addr.city', type: 'keyword' }).ok, true);
+eq('rowToDef-坏 JSON 报错并带原因', E.rowToDef({ name: 'a', type: 'keyword', props: '{oops' }).ok, false);
+ok('rowToDef-坏 JSON 错误信息含解析失败', /解析失败/.test(E.rowToDef({ name: 'a', type: 'keyword', props: '{oops' }).error));
+eq('rowToDef-属性非对象报错', E.rowToDef({ name: 'a', type: 'keyword', props: '[1,2]' }).ok, false);
+eq('rowToDef-属性覆盖 type', E.rowToDef({ name: 'a', type: 'keyword', props: '{"type":"text"}' }).def, { type: 'text' });
+
+// ---- 15.2 buildMappingBody：条目 → _mapping 请求体 ----
+eq('buildMappingBody-单字段', E.buildMappingBody([{ path: 'price', def: { type: 'double' } }]),
+  { properties: { price: { type: 'double' } } });
+eq('buildMappingBody-多字段', E.buildMappingBody([
+  { path: 'a', def: { type: 'keyword' } },
+  { path: 'b', def: { type: 'long' } },
+]), { properties: { a: { type: 'keyword' }, b: { type: 'long' } } });
+eq('buildMappingBody-点分路径自动嵌套', E.buildMappingBody([
+  { path: 'addr.city', def: { type: 'keyword' } },
+  { path: 'addr.zip', def: { type: 'keyword' } },
+]), { properties: { addr: { properties: { city: { type: 'keyword' }, zip: { type: 'keyword' } } } } });
+eq('buildMappingBody-已有对象补子字段', E.buildMappingBody([
+  { path: 'addr', def: { properties: { city: { type: 'keyword' } } } },
+  { path: 'addr.zip', def: { type: 'keyword' } },
+]), { properties: { addr: { properties: { city: { type: 'keyword' }, zip: { type: 'keyword' } } } } });
+eq('buildMappingBody-跳过空条目', E.buildMappingBody([null, { path: '', def: {} }, { path: 'a', def: { type: 'keyword' } }]),
+  { properties: { a: { type: 'keyword' } } });
+eq('buildMappingBody-空数组', E.buildMappingBody([]), { properties: {} });
+
+// ---- 15.3 fieldDefFromRaw：从原始 mapping 取定义（深拷贝） ----
+const rawMapping = {
+  properties: {
+    title: { type: 'text', analyzer: 'ik_max_word', fields: { keyword: { type: 'keyword' } } },
+    author: { properties: { name: { type: 'keyword' }, age: { type: 'integer' } } },
+  },
+};
+eq('fieldDefFromRaw-顶层字段', E.fieldDefFromRaw(rawMapping, 'title'), rawMapping.properties.title);
+eq('fieldDefFromRaw-嵌套字段', E.fieldDefFromRaw(rawMapping, 'author.age'), { type: 'integer' });
+eq('fieldDefFromRaw-容器字段', E.fieldDefFromRaw(rawMapping, 'author'),
+  { properties: { name: { type: 'keyword' }, age: { type: 'integer' } } });
+eq('fieldDefFromRaw-不存在返回 null', E.fieldDefFromRaw(rawMapping, 'nope'), null);
+eq('fieldDefFromRaw-空路径返回 null', E.fieldDefFromRaw(rawMapping, ''), null);
+const cloned = E.fieldDefFromRaw(rawMapping, 'author');
+cloned.properties.age.type = 'long';
+eq('fieldDefFromRaw-深拷贝不影响原对象', rawMapping.properties.author.properties.age.type, 'integer');
+
+// ---- 16. 创建索引 / 添加字段：transport 请求构造（mock fetch）----
+(async () => {
+  const src = { id: 'ds_x', url: 'http://localhost:9200', authType: 'none' };
+  const calls = [];
+  globalThis.fetch = async (url, opts) => {
+    calls.push({
+      url: String(url),
+      method: (opts && opts.method) || 'GET',
+      body: opts && opts.body ? JSON.parse(opts.body) : null,
+    });
+    return { ok: true, status: 200, text: async () => '{"acknowledged":true}' };
+  };
+  const t = E.transport(src); // Node 环境下默认为 direct 模式
+  await t.create('orders', { settings: { number_of_shards: 1 }, mappings: { properties: { a: { type: 'text' } } } });
+  await t.putMapping('orders', { properties: { price: { type: 'double' } } });
+  eq('创建索引 URL', calls[0].url, 'http://localhost:9200/orders');
+  eq('创建索引方法', calls[0].method, 'PUT');
+  eq('创建索引透传 body', calls[0].body, { settings: { number_of_shards: 1 }, mappings: { properties: { a: { type: 'text' } } } });
+  eq('添加字段 URL', calls[1].url, 'http://localhost:9200/orders/_mapping');
+  eq('添加字段方法', calls[1].method, 'PUT');
+  eq('添加字段 body', calls[1].body, { properties: { price: { type: 'double' } } });
+
+  console.log(failed === 0 ? '\n全部通过' : '\n有 ' + failed + ' 项失败');
+  process.exit(failed === 0 ? 0 : 1);
+})();

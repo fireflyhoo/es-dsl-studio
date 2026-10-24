@@ -9,6 +9,7 @@
   const {
     formatBytes, formatCount, hostOf, typeCounts, filterFields,
     parseDetail, indexSettingsSummary, transport, Sources, AUTH_TYPES,
+    fieldDefFromRaw, buildMappingBody, rowToDef,
   } = E;
 
   /* ---------------- 状态 ---------------- */
@@ -29,6 +30,9 @@
     fieldType: 'all',
     showSystem: false,
     booted: false,
+    // 字段批量编辑器（字段映射页签内联编辑）：{sid, index, rows, sel, err}
+    // rows: [{name, type, meta, props, propsOpen}]，sel: {已有字段路径: true}
+    batch: null,
   };
   let renderSampleColBtn = null; // 样本数据「选择列」按钮（renderSample 内赋值）
 
@@ -281,8 +285,12 @@
         const fe = h('div', 'idx-field');
         fe.dataset.act = 'copy-field';
         fe.dataset.path = f.path;
-        fe.style.paddingLeft = (8 + f.depth * 14) + 'px';
-        fe.innerHTML = typeBadge(f.type) + '<span class="fname">' + esc(f.name) + '</span>';
+        fe.dataset.depth = f.depth;
+        fe.style.setProperty('--ind', (10 + f.depth * 14) + 'px');
+        fe.title = '点击复制：' + f.path;
+        fe.innerHTML = '<span class="fname">' + esc(f.name) + '</span>' + typeBadge(f.type);
+        if (f.isContainer) fe.classList.add('is-container');
+        if (f.isMultiField) fe.classList.add('is-multi');
         box.appendChild(fe);
       }
       if (fields.length > shown.length) {
@@ -389,7 +397,14 @@
 
     const data = rec.data;
     if (state.tab === 'overview') body.appendChild(renderOverview(data, meta, src));
-    else if (state.tab === 'fields') body.appendChild(renderFields(data));
+    else if (state.tab === 'fields') {
+      // 批量编辑器打开时，整块替换字段列表（仍在字段映射页签内）
+      if (state.batch && state.batch.sid === sel.sid && state.batch.index === sel.index) {
+        body.appendChild(renderBatchEditor(data, src));
+      } else {
+        body.appendChild(renderFields(data));
+      }
+    }
     else if (state.tab === 'settings') body.appendChild(renderSettings(data));
     else if (state.tab === 'aliases') body.appendChild(renderAliases(data));
     else if (state.tab === 'sample') {
@@ -468,9 +483,13 @@
         esc(c.type) + '（' + c.count + '）</option>').join('');
     const copyBtn = h('button', 'btn sm', '复制可见字段');
     copyBtn.dataset.act = 'copy-visible-fields';
+    const batchBtn = h('button', 'btn sm primary', ICON.edit + '批量编辑字段');
+    batchBtn.dataset.act = 'batch-edit';
+    batchBtn.title = '批量添加 / 编辑字段，保存到当前环境，并可生成同步到其他环境的 DSL';
     bar.appendChild(search);
     bar.appendChild(sel);
     bar.appendChild(copyBtn);
+    bar.appendChild(batchBtn);
     box.appendChild(bar);
 
     const list = filterFields(data.fields, state.fieldFilter, state.fieldType);
@@ -496,8 +515,10 @@
       if (!f.docValues) attrs.push('doc_values:false');
       if (f.isMultiField) attrs.push('multi-field');
 
+      // 树形缩进引导线：每个层级一根淡竖线，代替原来的裸 padding
+      const guides = f.depth > 0 ? '<span class="fc-ind">' + '<i></i>'.repeat(f.depth) + '</span>' : '';
       tr.innerHTML =
-        '<td class="fc-name"><span style="padding-left:' + (f.depth * 16) + 'px" class="' +
+        '<td class="fc-name">' + guides + '<span class="' +
           (f.isContainer ? 'is-container' : '') + '">' + esc(f.name) + '</span></td>' +
         '<td>' + typeBadge(f.type) + '</td>' +
         '<td class="fc-meta mono">' + esc(f.analyzer || f.format || '') + '</td>' +
@@ -526,20 +547,44 @@
   function renderAliases(data) {
     const box = h('div', 'tab-pane');
     const names = Object.keys(data.aliases);
+
+    const bar = h('div', 'fields-toolbar');
+    const cnt = h('span', 'mono dim', '共 ' + names.length + ' 个别名');
+    const addBtn = h('button', 'btn sm primary', '+ 添加别名');
+    addBtn.dataset.act = 'add-alias';
+    addBtn.title = '给该索引添加别名（PUT _alias）';
+    const spacer = h('span');
+    spacer.style.flex = '1';
+    bar.appendChild(cnt);
+    bar.appendChild(spacer);
+    bar.appendChild(addBtn);
+    box.appendChild(bar);
+
     if (!names.length) {
-      box.appendChild(h('div', 'detail-loading', '该索引没有配置别名'));
+      box.appendChild(h('div', 'detail-loading', '该索引没有配置别名。别名可用于灰度切换、只读视图、跨索引检索等场景。'));
       return box;
     }
     const table = h('table', 'fields-table');
-    table.innerHTML = '<thead><tr><th>别名</th><th>过滤条件</th><th>路由</th></tr></thead>';
+    table.innerHTML = '<thead><tr><th>别名</th><th>过滤条件</th><th>路由</th><th>写索引</th><th style="width:36px"></th></tr></thead>';
     const tbody = h('tbody');
     for (const n of names) {
       const a = data.aliases[n] || {};
       const tr = h('tr');
+      const routing = a.routing || a.index_routing || a.search_routing || '';
       tr.innerHTML =
         '<td class="fc-name">' + esc(n) + '</td>' +
         '<td class="fc-meta mono">' + (a.filter ? esc(JSON.stringify(a.filter)) : '—') + '</td>' +
-        '<td class="fc-meta mono">' + esc(a.routing || a.index_routing || '—') + '</td>';
+        '<td class="fc-meta mono">' + esc(routing || '—') + '</td>' +
+        '<td>' + (a.is_write_index ? '<span class="tag-ro" style="color:#0369a1;border-color:#bae6fd;background:#f0f9ff">写</span>' : '—') + '</td>';
+      const td = h('td');
+      const del = h('button', 'icon-btn del', '✕');
+      del.dataset.act = 'del-alias';
+      del.dataset.alias = n;
+      del.dataset.sid = state.active ? state.active.sid : '';
+      del.dataset.index = state.active ? state.active.index : '';
+      del.title = '删除别名 ' + n;
+      td.appendChild(del);
+      tr.appendChild(td);
       tbody.appendChild(tr);
     }
     table.appendChild(tbody);
@@ -836,6 +881,7 @@
     state.active = { sid: sid, index: index };
     state.fieldFilter = '';
     state.fieldType = 'all';
+    state.batch = null; // 切换索引时退出批量编辑，避免把改动写到别的索引上
     state.expandedSrc[sid] = true;
     renderTree();
     renderDetail();
@@ -861,6 +907,554 @@
         toast('已删除索引 ' + index);
         connect(sid, true);
       },
+    });
+  }
+
+  /* ---------------- 别名管理 ---------------- */
+  function aliasFormError(msg, focusSel) {
+    const box = $('#alias-err');
+    if (box) { box.className = 'ds-test-result bad'; box.textContent = msg; }
+    if (focusSel) { const el = $(focusSel); if (el) el.focus(); }
+  }
+
+  function openAliasModal() {
+    if (!state.active) { toast('请先选择一个索引'); return; }
+    const src = srcOf(state.active.sid);
+    if (src && src.readonly) { toast('该数据源处于只读模式'); return; }
+    $('#alias-title').textContent = '添加别名 · ' + state.active.index;
+    $('#alias-target-note').textContent = 'PUT /' + state.active.index + '/_alias/{别名}';
+    $('#alias-name').value = '';
+    $('#alias-routing').value = '';
+    $('#alias-index-routing').value = '';
+    $('#alias-search-routing').value = '';
+    $('#alias-write').checked = false;
+    $('#alias-filter').value = '';
+    $('#alias-err').className = 'ds-test-result';
+    $('#alias-err').textContent = '';
+    $('#alias-mask').classList.add('show');
+    setTimeout(() => $('#alias-name').focus(), 40);
+  }
+
+  function closeAliasModal() {
+    $('#alias-mask').classList.remove('show');
+  }
+
+  async function saveAlias() {
+    if (!state.active) return;
+    const sid = state.active.sid;
+    const index = state.active.index;
+    const src = srcOf(sid);
+    if (!src) return;
+    if (src.readonly) { aliasFormError('该数据源处于只读模式，禁止添加别名'); return; }
+
+    const name = $('#alias-name').value.trim();
+    if (!name) { aliasFormError('请填写别名', '#alias-name'); return; }
+    if (!/^[a-z0-9][a-z0-9._-]*$/.test(name)) {
+      aliasFormError('别名只能用小写字母 / 数字 / _ - .，且须以字母或数字开头', '#alias-name'); return;
+    }
+    const rec = state.detail[sid + '|' + index];
+    if (rec && rec.data && rec.data.aliases[name]) { aliasFormError('该别名已存在', '#alias-name'); return; }
+
+    // 空值不写入，保持请求体干净（用 ES 默认行为）
+    const body = {};
+    const routing = $('#alias-routing').value.trim();
+    if (routing) body.routing = routing;
+    const indexRouting = $('#alias-index-routing').value.trim();
+    if (indexRouting) body.index_routing = indexRouting;
+    const searchRouting = $('#alias-search-routing').value.trim();
+    if (searchRouting) body.search_routing = searchRouting;
+    if ($('#alias-write').checked) body.is_write_index = true;
+    const rawFilter = $('#alias-filter').value.trim();
+    if (rawFilter) {
+      let filter;
+      try { filter = JSON.parse(rawFilter); }
+      catch (e) { aliasFormError('过滤条件 JSON 解析失败：' + e.message, '#alias-filter'); return; }
+      if (!filter || typeof filter !== 'object' || Array.isArray(filter)) {
+        aliasFormError('过滤条件必须是一个 JSON 对象', '#alias-filter'); return;
+      }
+      body.filter = filter;
+    }
+
+    const btn = $('#alias-save');
+    btn.disabled = true;
+    try {
+      await transport(src).addAlias(index, name, body);
+      closeAliasModal();
+      delete state.detail[sid + '|' + index]; // 清缓存，重新拉取别名
+      await ensureDetail(sid, index, true);
+      renderDetail();
+      toast('已添加别名 ' + name);
+    } catch (e) {
+      if (e.kind === 'auth') { closeAliasModal(); openTokenModal(() => saveAlias()); }
+      else aliasFormError(e.message || String(e));
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function removeAliasFlow(sid, index, alias) {
+    const src = srcOf(sid);
+    if (src && src.readonly) { toast('该数据源处于只读模式'); return; }
+    confirmDialog({
+      title: '删除别名',
+      desc: '将删除索引 <b class="mono">' + esc(index) + '</b> 上的别名 <b class="mono">' + esc(alias) + '</b>。<br>' +
+        '通过该别名的查询 / 写入将不再可用，<b>索引本身与数据不受影响</b>。',
+      okText: '删除别名',
+      danger: true,
+      onOk: async () => {
+        const src2 = srcOf(sid);
+        await transport(src2).removeAlias(index, alias);
+        delete state.detail[sid + '|' + index];
+        await ensureDetail(sid, index, true);
+        renderDetail();
+        toast('已删除别名 ' + alias);
+      },
+    });
+  }
+
+  /* ---------------- 新建索引 ---------------- */
+  function esIndexNameError(name) {
+    if (!name) return '请填写索引名';
+    if (name !== name.toLowerCase()) return '索引名必须全小写（ES 不允许大写）';
+    if ('-_+'.indexOf(name[0]) !== -1) return '索引名不能以 -、_、+ 开头';
+    if (!/^[a-z0-9][a-z0-9\-_+.]*$/.test(name)) return '只能包含小写字母、数字、-、_、+、.';
+    if (utf8Len(name) > 255) return '索引名过长（最多 255 字节）';
+    if (['.', '..'].indexOf(name) !== -1) return '索引名不能是 . 或 ..';
+    return '';
+  }
+  // 索引名长度限制按 UTF-8 字节算
+  function utf8Len(s) {
+    return new TextEncoder().encode(s).length;
+  }
+
+  function ixFormError(msg, focusSel) {
+    const box = $('#ix-err');
+    if (box) { box.className = 'ds-test-result bad'; box.textContent = msg; }
+    if (focusSel) { const el = $(focusSel); if (el) el.focus(); }
+  }
+
+  function openCreateIndexModal() {
+    if (!state.sources.length) { toast('请先添加数据源'); return; }
+    // 目标数据源：当前选中索引所属 > 第一个数据源
+    const prefer = (state.active && srcOf(state.active.sid)) || state.sources[0];
+    const sel = $('#ix-source');
+    sel.innerHTML = state.sources.map((s) =>
+      '<option value="' + esc(s.id) + '"' + (s.id === prefer.id ? ' selected' : '') + '>' +
+      esc(s.name + ' · ' + hostOf(s.url)) + '</option>').join('');
+    $('#ix-name').value = '';
+    $('#ix-shards').value = '1';
+    $('#ix-replicas').value = '1';
+    $('#ix-body').value = '';
+    $('#ix-err').className = 'ds-test-result';
+    $('#ix-err').textContent = '';
+    $('#ix-mask').classList.add('show');
+    setTimeout(() => $('#ix-name').focus(), 40);
+  }
+
+  function closeCreateIndexModal() {
+    $('#ix-mask').classList.remove('show');
+  }
+
+  async function saveCreateIndex() {
+    const src = srcOf($('#ix-source').value);
+    if (!src) return;
+    if (src.readonly) { ixFormError('该数据源处于只读模式，禁止创建索引'); return; }
+    const name = $('#ix-name').value.trim();
+    const nameErr = esIndexNameError(name);
+    if (nameErr) { ixFormError(nameErr, '#ix-name'); return; }
+
+    // 索引体：高级 JSON 优先，否则用分片 / 副本数值生成 settings
+    let body = null;
+    const rawJson = $('#ix-body').value.trim();
+    if (rawJson) {
+      try { body = JSON.parse(rawJson); }
+      catch (e) { ixFormError('索引体 JSON 解析失败：' + e.message, '#ix-body'); return; }
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        ixFormError('索引体必须是一个 JSON 对象', '#ix-body'); return;
+      }
+    } else {
+      const shards = Math.max(1, Math.min(64, parseInt($('#ix-shards').value, 10) || 1));
+      const replicas = Math.max(0, Math.min(10, parseInt($('#ix-replicas').value, 10) || 0));
+      body = { settings: { number_of_shards: shards, number_of_replicas: replicas } };
+    }
+
+    const btn = $('#ix-save');
+    btn.disabled = true;
+    try {
+      await transport(src).create(name, body);
+      closeCreateIndexModal();
+      state.expandedSrc[src.id] = true;
+      await connect(src.id, true);
+      selectIndex(src.id, name); // 自动选中新索引，方便接着加字段
+      toast('已创建索引 ' + name);
+    } catch (e) {
+      if (e.kind === 'auth') { closeCreateIndexModal(); openTokenModal(() => saveCreateIndex()); }
+      else ixFormError(e.message || String(e));
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  /* ---------------- 批量字段编辑 + 索引变更 DSL ---------------- */
+  const FIELD_TYPES = [
+    ['keyword', 'keyword（精确值 / 聚合 / 排序）'],
+    ['text', 'text（全文检索，需分词）'],
+    ['long', 'long（整数）'],
+    ['integer', 'integer（整数）'],
+    ['short', 'short（整数）'],
+    ['double', 'double（小数）'],
+    ['float', 'float（小数）'],
+    ['boolean', 'boolean（布尔）'],
+    ['date', 'date（日期时间）'],
+    ['ip', 'ip（IP 地址）'],
+    ['object', 'object（对象，含子字段）'],
+    ['nested', 'nested（对象数组）'],
+    ['geo_point', 'geo_point（经纬度坐标）'],
+  ];
+
+  function emptyRow() {
+    return { name: '', type: 'keyword', meta: '', props: '', propsOpen: false, err: '' };
+  }
+
+  function metaPlaceholder(type) {
+    if (type === 'text') return '分词器，如 standard / ik_max_word';
+    if (type === 'date') return '格式，如 yyyy-MM-dd HH:mm:ss||epoch_millis';
+    if (type === 'keyword') return 'normalizer（可选），如 lowercase';
+    return '该类型一般无需填写';
+  }
+
+  function openBatchEditor() {
+    if (!state.active) { toast('请先选择一个索引'); return; }
+    state.batch = {
+      sid: state.active.sid,
+      index: state.active.index,
+      rows: [emptyRow()],
+      sel: {},
+      err: '',
+      saving: false,
+    };
+    renderDetail();
+  }
+
+  function closeBatchEditor() {
+    state.batch = null;
+    renderDetail();
+  }
+
+  // 已有字段里可勾选的顶层字段（多字段属于父字段定义，不单独列出）
+  function selectableFields(data) {
+    return (data.fields || []).filter((f) => f.depth === 0 && !f.isMultiField);
+  }
+
+  function selCount() {
+    if (!state.batch) return 0;
+    return Object.keys(state.batch.sel).filter((k) => state.batch.sel[k]).length;
+  }
+
+  function renderNewRow(row) {
+    const wrap = h('div', 'be-row');
+    if (row.propsOpen) wrap.classList.add('open');
+
+    const main = h('div', 'be-row-main');
+    const nameInput = h('input', 'be-input be-name mono');
+    nameInput.type = 'text';
+    nameInput.placeholder = '字段名，如 customer_name';
+    nameInput.value = row.name;
+    nameInput.spellcheck = false;
+    nameInput.autocomplete = 'off';
+    nameInput.addEventListener('input', () => { row.name = nameInput.value; });
+
+    const typeSel = h('select', 'be-input be-type');
+    typeSel.innerHTML = FIELD_TYPES.map(([v, label]) =>
+      '<option value="' + v + '"' + (row.type === v ? ' selected' : '') + '>' + esc(label) + '</option>').join('');
+
+    const metaInput = h('input', 'be-input be-meta mono');
+    metaInput.type = 'text';
+    metaInput.placeholder = metaPlaceholder(row.type);
+    metaInput.value = row.meta;
+    metaInput.spellcheck = false;
+    metaInput.autocomplete = 'off';
+    typeSel.addEventListener('change', () => {
+      row.type = typeSel.value;
+      metaInput.placeholder = metaPlaceholder(row.type);
+    });
+    metaInput.addEventListener('input', () => { row.meta = metaInput.value; });
+
+    const propsBtn = h('button', 'icon-btn', '⚙');
+    propsBtn.title = '高级属性 JSON（analyzer / format / fields 等）';
+    propsBtn.dataset.act = 'be-props';
+
+    const delBtn = h('button', 'icon-btn del', '✕');
+    delBtn.title = '删除该行';
+    delBtn.dataset.act = 'be-del-row';
+
+    main.appendChild(nameInput);
+    main.appendChild(typeSel);
+    main.appendChild(metaInput);
+    main.appendChild(propsBtn);
+    main.appendChild(delBtn);
+    wrap.appendChild(main);
+
+    if (row.err) {
+      wrap.appendChild(h('div', 'be-row-err', esc(row.err)));
+    }
+    if (row.propsOpen) {
+      const propsBox = h('div', 'be-props-box');
+      const ta = h('textarea', 'be-input mono');
+      ta.rows = 3;
+      ta.spellcheck = false;
+      ta.placeholder = '{ "index": false } 或 { "fields": { "kw": { "type": "keyword" } } }';
+      ta.value = row.props;
+      ta.addEventListener('input', () => { row.props = ta.value; });
+      propsBox.appendChild(ta);
+      wrap.appendChild(propsBox);
+    }
+    return wrap;
+  }
+
+  function renderBatchEditor(data, src) {
+    const box = h('div', 'tab-pane batch-editor');
+    const readonly = !!(src && src.readonly);
+
+    // ---- 头部 ----
+    const head = h('div', 'be-head');
+    head.innerHTML =
+      '<div class="be-title">' + ICON.edit + '<span>批量字段编辑</span></div>' +
+      '<div class="be-target mono">' + esc(state.batch.index) + (src ? ' · ' + esc(src.name) : '') + '</div>';
+    const exitBtn = h('button', 'btn sm', '退出编辑');
+    exitBtn.dataset.act = 'batch-close';
+    head.appendChild(exitBtn);
+    box.appendChild(head);
+
+    if (state.batch.err) {
+      box.appendChild(h('div', 'detail-error', '<b>操作失败</b><div>' + esc(state.batch.err) + '</div>'));
+    }
+
+    // ---- 已有字段（勾选纳入 DSL） ----
+    const existing = selectableFields(data);
+    const sec1 = h('div', 'be-sec');
+    const sec1h = h('div', 'be-sec-h');
+    sec1h.innerHTML = '<span class="be-sec-t">已有字段</span>' +
+      '<span class="be-sec-sub">勾选后纳入 DSL，用于同步到其他环境</span><span style="flex:1"></span>' +
+      '<span class="be-sel-count" id="be-sel-count">' + (selCount() ? '已选 ' + selCount() + ' 个' : '') + '</span>';
+    const allBtn = h('button', 'btn sm', '全选');
+    allBtn.dataset.act = 'be-sel-all';
+    const noneBtn = h('button', 'btn sm', '全不选');
+    noneBtn.dataset.act = 'be-sel-none';
+    sec1h.appendChild(allBtn);
+    sec1h.appendChild(noneBtn);
+    sec1.appendChild(sec1h);
+
+    if (!existing.length) {
+      sec1.appendChild(h('div', 'be-empty', '该索引暂无字段'));
+    } else {
+      const tbl = h('table', 'fields-table be-existing');
+      tbl.innerHTML = '<thead><tr><th class="be-col-chk"></th><th>字段</th><th>类型</th><th>分词器 / 格式</th></tr></thead>';
+      const tb = h('tbody');
+      for (const f of existing) {
+        const tr = h('tr');
+        const chk = h('input', 'be-chk');
+        chk.type = 'checkbox';
+        chk.checked = !!state.batch.sel[f.path];
+        chk.title = '勾选后纳入 DSL';
+        chk.addEventListener('change', () => {
+          if (chk.checked) state.batch.sel[f.path] = true;
+          else delete state.batch.sel[f.path];
+          const c = $('#be-sel-count');
+          if (c) c.textContent = selCount() ? '已选 ' + selCount() + ' 个' : '';
+        });
+        const tdChk = h('td', 'be-col-chk');
+        tdChk.appendChild(chk);
+        tr.appendChild(tdChk);
+        tr.appendChild(h('td', 'fc-name mono', esc(f.path)));
+        const tdType = h('td');
+        tdType.innerHTML = typeBadge(f.type);
+        tr.appendChild(tdType);
+        tr.appendChild(h('td', 'fc-meta mono', esc(f.analyzer || f.format || '—')));
+        tb.appendChild(tr);
+      }
+      tbl.appendChild(tb);
+      sec1.appendChild(tbl);
+    }
+    box.appendChild(sec1);
+
+    // ---- 新增字段 ----
+    const sec2 = h('div', 'be-sec');
+    const sec2h = h('div', 'be-sec-h');
+    sec2h.innerHTML = '<span class="be-sec-t">新增字段</span>' +
+      '<span class="be-sec-sub">保存后写入 ' + esc(state.batch.index) + '（UAT 改结构 → 生成 DSL → 线上执行）</span><span style="flex:1"></span>';
+    const addRowBtn = h('button', 'btn sm', '+ 添加一行');
+    addRowBtn.dataset.act = 'be-add-row';
+    sec2h.appendChild(addRowBtn);
+    sec2.appendChild(sec2h);
+
+    const rowsWrap = h('div', 'be-rows');
+    state.batch.rows.forEach((row) => rowsWrap.appendChild(renderNewRow(row)));
+    sec2.appendChild(rowsWrap);
+    box.appendChild(sec2);
+
+    // ---- 底部操作 ----
+    const foot = h('div', 'be-foot');
+    const cancelBtn = h('button', 'btn', '取消');
+    cancelBtn.dataset.act = 'batch-close';
+    const dslBtn = h('button', 'btn', '生成 DSL');
+    dslBtn.dataset.act = 'batch-dsl';
+    dslBtn.title = '勾选的已有字段 + 下方新增字段，生成 PUT _mapping 语句';
+    const saveBtn = h('button', 'btn primary', state.batch.saving ? '保存中…' : '保存到当前环境');
+    saveBtn.dataset.act = 'batch-save';
+    saveBtn.title = readonly ? '该数据源处于只读模式，仅支持生成 DSL' : '把下方新增字段一次性写入当前环境';
+    if (readonly || state.batch.saving) saveBtn.disabled = true;
+    foot.appendChild(cancelBtn);
+    foot.appendChild(h('span', 'be-foot-spacer'));
+    foot.appendChild(dslBtn);
+    foot.appendChild(saveBtn);
+    box.appendChild(foot);
+
+    box.appendChild(h('div', 'form-note be-note', readonly
+      ? '只读数据源：不能写入，但可以勾选字段生成 DSL，拿到其他环境执行。'
+      : '已有字段的类型不可修改（ES 限制），如需变更请新建索引并 reindex。「分词器 / 格式」列按类型对应 analyzer / format / normalizer，更多属性点行尾 ⚙ 填 JSON。'));
+    return box;
+  }
+
+  // 汇总字段条目：勾选的已有字段（取原始定义）+ 填写完整的新增行
+  function collectBatchEntries() {
+    const batch = state.batch;
+    const rec = state.detail[batch.sid + '|' + batch.index];
+    const data = rec && rec.data ? rec.data : { fields: [], rawMapping: {} };
+    const existingPaths = {};
+    for (const f of data.fields) existingPaths[f.path] = true;
+
+    const entries = [];
+    const rowErrors = [];
+
+    for (const path of Object.keys(batch.sel)) {
+      if (!batch.sel[path]) continue;
+      const def = fieldDefFromRaw(data.rawMapping, path);
+      if (def) entries.push({ path: path, def: def, from: 'existing' });
+    }
+
+    const seen = {};
+    batch.rows.forEach((row, i) => {
+      const filled = row.name.trim() || row.type !== 'keyword' || row.meta.trim() || row.props.trim();
+      const r = rowToDef(row);
+      if (!r.ok) {
+        if (filled) rowErrors.push({ idx: i, error: r.error });
+        return;
+      }
+      const name = row.name.trim();
+      if (seen[name]) { rowErrors.push({ idx: i, error: '字段名重复：' + name }); return; }
+      if (existingPaths[name]) { rowErrors.push({ idx: i, error: '字段已存在：' + name }); return; }
+      seen[name] = 1;
+      entries.push({ path: name, def: r.def, from: 'new' });
+    });
+    return { entries: entries, rowErrors: rowErrors };
+  }
+
+  async function saveBatch() {
+    const batch = state.batch;
+    if (!batch) return;
+    const src = srcOf(batch.sid);
+    if (!src) return;
+    if (src.readonly) { toast('该数据源处于只读模式'); return; }
+
+    const { entries, rowErrors } = collectBatchEntries();
+    batch.rows.forEach((r) => { r.err = ''; });
+    for (const re of rowErrors) batch.rows[re.idx].err = re.error;
+    const newEntries = entries.filter((e) => e.from === 'new');
+    if (rowErrors.length || !newEntries.length) {
+      batch.err = '';
+      renderDetail();
+      toast(rowErrors.length ? rowErrors[0].error : '请至少填写一个新增字段');
+      return;
+    }
+
+    batch.saving = true;
+    renderDetail();
+    try {
+      await transport(src).putMapping(batch.index, buildMappingBody(newEntries));
+      // 新字段并入「已有字段」并默认勾选，方便紧接着生成 DSL 同步到其他环境
+      for (const e of newEntries) batch.sel[e.path] = true;
+      batch.rows = [emptyRow()];
+      batch.err = '';
+      delete state.detail[batch.sid + '|' + batch.index];
+      await ensureDetail(batch.sid, batch.index, true);
+      renderDetail();
+      syncBridge();
+      toast('已保存 ' + newEntries.length + ' 个字段，可点「生成 DSL」同步到其他环境');
+      focusFirstName();
+    } catch (e) {
+      if (e.kind === 'auth') openTokenModal(() => saveBatch());
+      else { batch.err = e.message || String(e); }
+    } finally {
+      batch.saving = false;
+      renderDetail();
+    }
+  }
+
+  // 焦点落到最后一个新增行的字段名输入框（保存后 / 添加一行后接着录）
+  function focusFirstName() {
+    setTimeout(() => {
+      const els = document.querySelectorAll('.be-row .be-name');
+      if (els.length) els[els.length - 1].focus();
+    }, 0);
+  }
+
+  /* ---------------- 索引变更 DSL 弹窗 ---------------- */
+  let dslState = null; // {index, entries: [{path, def, from}], src}
+
+  function openDslModal() {
+    const batch = state.batch;
+    if (!batch) return;
+    const { entries, rowErrors } = collectBatchEntries();
+    if (rowErrors.length) { toast(rowErrors[0].error); return; }
+    if (!entries.length) { toast('请先勾选已有字段，或填写新增字段'); return; }
+    dslState = { index: batch.index, entries: entries, src: srcOf(batch.sid) };
+    renderDslModal();
+    $('#dsl-mask').classList.add('show');
+  }
+
+  function closeDslModal() {
+    $('#dsl-mask').classList.remove('show');
+    dslState = null;
+  }
+
+  function dslBody() {
+    return buildMappingBody(dslState.entries);
+  }
+
+  function dslRequestLine() {
+    return 'PUT /' + dslState.index + '/_mapping';
+  }
+
+  function dslCurl() {
+    const src = dslState.src || {};
+    const base = String(src.url || 'http://localhost:9200').replace(/\/+$/, '');
+    return 'curl -X PUT "' + base + '/' + dslState.index + '/_mapping" \\\n' +
+      "  -H 'Content-Type: application/json' \\\n" +
+      "  -d '" + JSON.stringify(dslBody()) + "'";
+  }
+
+  function renderDslModal() {
+    $('#dsl-title-index').textContent = dslState.index;
+    $('#dsl-req').textContent = dslRequestLine();
+    $('#dsl-body').innerHTML = highlightJSON(dslBody());
+    $('#dsl-count').textContent = '共 ' + dslState.entries.length + ' 个字段';
+
+    const chips = $('#dsl-chips');
+    chips.innerHTML = '';
+    dslState.entries.forEach((e, i) => {
+      const chip = h('span', 'dsl-chip' + (e.from === 'new' ? ' is-new' : ''));
+      chip.title = e.path + (e.from === 'new' ? '（新增，尚未保存）' : '（已有字段）');
+      chip.innerHTML = '<span class="mono">' + esc(e.path) + '</span>';
+      const x = h('button', 'chip-x', '✕');
+      x.title = '从本次语句中移除';
+      x.addEventListener('click', () => {
+        dslState.entries.splice(i, 1);
+        if (!dslState.entries.length) { closeDslModal(); toast('已移除全部字段'); return; }
+        renderDslModal();
+      });
+      chip.appendChild(x);
+      chips.appendChild(chip);
     });
   }
 
@@ -946,6 +1540,7 @@
 
     // 头部按钮
     $('#btn-add-ds').addEventListener('click', () => openSourceModal(null));
+    $('#btn-add-idx').addEventListener('click', openCreateIndexModal);
     $('#btn-refresh-all').addEventListener('click', () => {
       state.sources.forEach((s) => connect(s.id, true));
     });
@@ -1001,6 +1596,51 @@
       if (btn) {
         const act = btn.dataset.act;
         if (act === 'copy-field') { copy(btn.dataset.path, '已复制字段名'); return; }
+        if (act === 'add-alias') { openAliasModal(); return; }
+        if (act === 'del-alias') {
+          removeAliasFlow(btn.dataset.sid, btn.dataset.index, btn.dataset.alias);
+          return;
+        }
+        if (act === 'batch-edit') { openBatchEditor(); return; }
+        if (act === 'batch-close') { closeBatchEditor(); return; }
+        if (act === 'batch-save') { saveBatch(); return; }
+        if (act === 'batch-dsl') { openDslModal(); return; }
+        if (act === 'be-add-row' && state.batch) {
+          state.batch.rows.push(emptyRow());
+          renderDetail();
+          focusFirstName();
+          return;
+        }
+        if (act === 'be-del-row' && state.batch) {
+          const rowEl = btn.closest('.be-row');
+          const rows = Array.prototype.slice.call(document.querySelectorAll('.be-rows .be-row'));
+          const i = rows.indexOf(rowEl);
+          if (i >= 0) state.batch.rows.splice(i, 1);
+          if (!state.batch.rows.length) state.batch.rows.push(emptyRow());
+          renderDetail();
+          return;
+        }
+        if (act === 'be-props' && state.batch) {
+          const rowEl = btn.closest('.be-row');
+          const rows = Array.prototype.slice.call(document.querySelectorAll('.be-rows .be-row'));
+          const i = rows.indexOf(rowEl);
+          if (i >= 0 && state.batch.rows[i]) {
+            state.batch.rows[i].propsOpen = !state.batch.rows[i].propsOpen;
+            renderDetail();
+          }
+          return;
+        }
+        if (act === 'be-sel-all' && state.batch) {
+          const rec = state.detail[state.batch.sid + '|' + state.batch.index];
+          if (rec && rec.data) for (const f of selectableFields(rec.data)) state.batch.sel[f.path] = true;
+          renderDetail();
+          return;
+        }
+        if (act === 'be-sel-none' && state.batch) {
+          state.batch.sel = {};
+          renderDetail();
+          return;
+        }
         if (act === 'retry-detail' && state.active) {
           delete state.detail[state.active.sid + '|' + state.active.index];
           ensureDetail(state.active.sid, state.active.index, true);
@@ -1051,6 +1691,38 @@
       if (box && box.classList.contains('bad')) { box.className = 'ds-test-result'; box.textContent = ''; }
     });
 
+    // 新建索引弹窗
+    $('#ix-cancel').addEventListener('click', closeCreateIndexModal);
+    $('#ix-save').addEventListener('click', saveCreateIndex);
+    $('#ix-mask').addEventListener('click', (e) => { if (e.target === $('#ix-mask')) closeCreateIndexModal(); });
+    $('#ix-name').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); saveCreateIndex(); }
+    });
+    $('#ix-form').addEventListener('input', () => {
+      const box = $('#ix-err');
+      if (box && box.classList.contains('bad')) { box.className = 'ds-test-result'; box.textContent = ''; }
+    });
+
+    // 添加别名弹窗
+    $('#alias-cancel').addEventListener('click', closeAliasModal);
+    $('#alias-save').addEventListener('click', saveAlias);
+    $('#alias-mask').addEventListener('click', (e) => { if (e.target === $('#alias-mask')) closeAliasModal(); });
+    $('#alias-name').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); saveAlias(); }
+    });
+    $('#alias-form').addEventListener('input', () => {
+      const box = $('#alias-err');
+      if (box && box.classList.contains('bad')) { box.className = 'ds-test-result'; box.textContent = ''; }
+    });
+
+    // 索引变更 DSL 弹窗
+    $('#dsl-copy-req').addEventListener('click', () => { if (dslState) copy(dslRequestLine(), '已复制请求行'); });
+    $('#dsl-copy-json').addEventListener('click', () => { if (dslState) copy(JSON.stringify(dslBody(), null, 2), '已复制 JSON'); });
+    $('#dsl-copy-curl').addEventListener('click', () => { if (dslState) copy(dslCurl(), '已复制 curl 命令'); });
+    $('#dsl-done').addEventListener('click', closeDslModal);
+    $('#dsl-close').addEventListener('click', closeDslModal);
+    $('#dsl-mask').addEventListener('click', (e) => { if (e.target === $('#dsl-mask')) closeDslModal(); });
+
     // 确认弹窗
     $('#confirm-cancel').addEventListener('click', closeConfirm);
     $('#confirm-ok').addEventListener('click', () => { if (confirmResolve) confirmResolve(); });
@@ -1068,7 +1740,10 @@
 
     document.addEventListener('keydown', (e) => {
       if (e.key !== 'Escape') return;
-      if ($('#ds-mask').classList.contains('show')) closeSourceModal();
+      if ($('#dsl-mask').classList.contains('show')) closeDslModal();
+      else if ($('#alias-mask').classList.contains('show')) closeAliasModal();
+      else if ($('#ds-mask').classList.contains('show')) closeSourceModal();
+      else if ($('#ix-mask').classList.contains('show')) closeCreateIndexModal();
       else if ($('#confirm-mask').classList.contains('show')) closeConfirm();
       else if ($('#token-mask').classList.contains('show')) closeTokenModal(false);
     });
