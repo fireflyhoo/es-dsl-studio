@@ -185,6 +185,7 @@
           <span class="spacer"></span>
           <span id="idx-mode-badge" class="mode-badge"></span>
           <button class="btn sm" id="btn-refresh-all" title="刷新全部数据源">刷新</button>
+          <button class="btn sm primary" id="btn-add-idx" title="在所选数据源上创建新索引">+ 索引</button>
           <button class="btn sm primary" id="btn-add-ds">+ 新增</button>
         </div>
         <div class="idx-search-row">
@@ -299,6 +300,104 @@
       <span style="flex:1"></span>
       <button class="btn" id="ds-cancel2" onclick="document.getElementById('ds-cancel').click()">取消</button>
       <button class="btn primary" id="ds-save">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 新建索引弹窗 -->
+<div id="ix-mask" class="mask">
+  <div id="ix-modal">
+    <div class="m-h"><span>新建索引</span>
+      <button class="icon-btn x" id="ix-cancel" title="关闭">✕</button>
+    </div>
+    <div class="m-b" id="ix-form">
+      <div class="form-grid">
+        <label>数据源
+          <select id="ix-source"></select>
+        </label>
+        <label>索引名 <span class="req">*</span><input id="ix-name" placeholder="如：orders-2026" autocomplete="off" spellcheck="false"></label>
+      </div>
+      <div class="form-grid">
+        <label>主分片数<input id="ix-shards" type="number" min="1" max="64" value="1"></label>
+        <label>副本数<input id="ix-replicas" type="number" min="0" max="10" value="1"></label>
+      </div>
+      <details class="form-details">
+        <summary>高级选项：索引体 JSON（settings / mappings / aliases）</summary>
+        <textarea id="ix-body" rows="7" spellcheck="false" placeholder='{
+  "mappings": {
+    "properties": {
+      "title": { "type": "text", "analyzer": "standard" },
+      "status": { "type": "keyword" }
+    }
+  }
+}'></textarea>
+        <div class="form-note">填写后将覆盖上方的分片 / 副本设置；留空则仅按上方数值创建。别名可在创建后用 _alias API 添加。</div>
+      </details>
+      <div id="ix-err" class="ds-test-result"></div>
+      <div class="form-note">索引名只能使用小写字母、数字、<code>-</code> <code>_</code> <code>+</code> <code>.</code>，且不能以 <code>-</code> <code>_</code> <code>+</code> 开头；创建后主分片数不可修改。</div>
+    </div>
+    <div class="m-f">
+      <button class="btn" id="ix-cancel2" onclick="document.getElementById('ix-cancel').click()">取消</button>
+      <button class="btn primary" id="ix-save">创建索引</button>
+    </div>
+  </div>
+</div>
+
+<!-- 索引变更 DSL 弹窗（批量字段编辑 → 生成可同步到其他环境的语句） -->
+<div id="dsl-mask" class="mask">
+  <div id="dsl-modal">
+    <div class="m-h"><span>索引变更 DSL</span>
+      <span class="dsl-title-index mono" id="dsl-title-index"></span>
+      <button class="icon-btn x" id="dsl-close" title="关闭">✕</button>
+    </div>
+    <div class="m-b">
+      <div class="dsl-req-wrap">
+        <div class="dsl-req-label">请求行</div>
+        <div class="dsl-req mono" id="dsl-req"></div>
+      </div>
+      <div class="dsl-chips-label">本次包含的字段（点 ✕ 可移除）<span class="dim" id="dsl-count"></span></div>
+      <div class="dsl-chips" id="dsl-chips"></div>
+      <pre class="json-view" id="dsl-body"></pre>
+      <div class="form-note">在目标环境执行以上语句即可同步索引结构（需已存在同名索引）。<b>_mapping 只能新增字段</b>，不能修改或删除已有字段；带「新增」标记的字段尚未保存到当前环境。</div>
+    </div>
+    <div class="m-f">
+      <button class="btn" id="dsl-copy-curl">复制 curl</button>
+      <button class="btn" id="dsl-copy-req">复制请求行</button>
+      <button class="btn" id="dsl-copy-json">复制 JSON</button>
+      <button class="btn primary" id="dsl-done">完成</button>
+    </div>
+  </div>
+</div>
+
+<!-- 添加别名弹窗 -->
+<div id="alias-mask" class="mask">
+  <div id="alias-modal">
+    <div class="m-h"><span id="alias-title">添加别名</span>
+      <span class="dsl-title-index mono" id="alias-target-note"></span>
+      <button class="icon-btn x" id="alias-cancel" title="关闭">✕</button>
+    </div>
+    <div class="m-b" id="alias-form">
+      <div class="form-grid">
+        <label>别名名称 <span class="req">*</span><input id="alias-name" placeholder="如：sos_ims_read" autocomplete="off" spellcheck="false"></label>
+        <label>路由 routing<input id="alias-routing" placeholder="可选，如：1" autocomplete="off" spellcheck="false"></label>
+      </div>
+      <div class="form-grid">
+        <label>索引路由 index_routing<input id="alias-index-routing" placeholder="可选" autocomplete="off" spellcheck="false"></label>
+        <label>搜索路由 search_routing<input id="alias-search-routing" placeholder="可选" autocomplete="off" spellcheck="false"></label>
+      </div>
+      <div class="form-checks">
+        <label class="chk"><input type="checkbox" id="alias-write"><span>写索引（该别名可执行写入 / 更新，同一索引最多一个写别名）</span></label>
+      </div>
+      <details class="form-details">
+        <summary>高级选项：过滤条件 filter（JSON）</summary>
+        <textarea id="alias-filter" rows="4" spellcheck="false" placeholder='{ "term": { "status": "active" } }'></textarea>
+        <div class="form-note">带过滤的别名是一个只读视图：通过它查询会自动附加该 filter，常用于按租户 / 状态隔离数据。</div>
+      </details>
+      <div id="alias-err" class="ds-test-result"></div>
+    </div>
+    <div class="m-f">
+      <button class="btn" id="alias-cancel2" onclick="document.getElementById('alias-cancel').click()">取消</button>
+      <button class="btn primary" id="alias-save">添加别名</button>
     </div>
   </div>
 </div>

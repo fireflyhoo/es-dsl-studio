@@ -46,6 +46,11 @@
     return encodeURIComponent(String(name));
   }
 
+  // 别名路径段：别名同样不允许 / ? # 等字符，统一编码保证路径安全
+  function encAlias(name) {
+    return encodeURIComponent(String(name));
+  }
+
   function b64(text) {
     if (typeof Buffer !== 'undefined') return Buffer.from(String(text), 'utf8').toString('base64');
     const bytes = new TextEncoder().encode(String(text));
@@ -267,6 +272,10 @@
       detail: (index) => api(base + '/indices/' + encIndex(index) + '/detail'),
       sample: (index, size) => api(base + '/indices/' + encIndex(index) + '/sample?size=' + (size || 10)),
       remove: (index) => api(base + '/indices/' + encIndex(index), { method: 'DELETE' }),
+      create: (index, body) => api(base + '/indices/' + encIndex(index), { method: 'PUT', body: body || {} }),
+      putMapping: (index, body) => api(base + '/indices/' + encIndex(index) + '/mapping', { method: 'PUT', body: body }),
+      addAlias: (index, alias, body) => api(base + '/indices/' + encIndex(index) + '/aliases/' + encAlias(alias), { method: 'PUT', body: body || {} }),
+      removeAlias: (index, alias) => api(base + '/indices/' + encIndex(index) + '/aliases/' + encAlias(alias), { method: 'DELETE' }),
       search: (index, body, timeout) => api(
         base + '/search',
         { method: 'POST', body: { index: index, body: body }, timeout: timeout || 30000 }
@@ -342,6 +351,10 @@
       },
       sample: (index, size) => directRequest(src, '/' + encIndex(index) + '/_search?size=' + (size || 10) + '&track_total_hits=true'),
       remove: (index) => directRequest(src, '/' + encIndex(index), { method: 'DELETE' }),
+      create: (index, body) => directRequest(src, '/' + encIndex(index), { method: 'PUT', body: body || {} }),
+      putMapping: (index, body) => directRequest(src, '/' + encIndex(index) + '/_mapping', { method: 'PUT', body: body }),
+      addAlias: (index, alias, body) => directRequest(src, '/' + encIndex(index) + '/_alias/' + encAlias(alias), { method: 'PUT', body: body || {} }),
+      removeAlias: (index, alias) => directRequest(src, '/' + encIndex(index) + '/_alias/' + encAlias(alias), { method: 'DELETE' }),
       search: (index, body, timeout) => {
         const parts = String(index).split(',').map((s) => encIndex(s.trim())).filter(Boolean);
         return directRequest(src, '/' + parts.join(',') + '/_search', {
@@ -375,6 +388,72 @@
       aliases: aliases,
       rawMapping: mappings,
     };
+  }
+
+  /* ---------------- 字段变更 DSL（批量编辑 / 跨环境同步用） ---------------- */
+
+  // 按点分路径从原始 mapping 里取字段定义（深拷贝，改返回值不影响原对象）
+  function fieldDefFromRaw(rawMapping, path) {
+    const parts = String(path || '').split('.').filter(Boolean);
+    if (!parts.length) return null;
+    let node = rawMapping && rawMapping.properties ? rawMapping.properties : null;
+    let def = null;
+    for (let i = 0; i < parts.length; i++) {
+      if (!node || typeof node !== 'object') return null;
+      const key = parts[i];
+      if (!Object.prototype.hasOwnProperty.call(node, key)) return null;
+      def = node[key] || {};
+      if (i < parts.length - 1) node = def.properties || null;
+    }
+    return def ? JSON.parse(JSON.stringify(def)) : null;
+  }
+
+  // [{path, def}] → _mapping 请求体；点分路径自动嵌套成 properties 结构
+  function buildMappingBody(entries) {
+    const root = {};
+    for (const e of entries || []) {
+      if (!e || !e.path || !e.def || typeof e.def !== 'object') continue;
+      const parts = String(e.path).split('.').filter(Boolean);
+      if (!parts.length) continue;
+      let node = root;
+      for (let i = 0; i < parts.length - 1; i++) {
+        const k = parts[i];
+        if (!node[k] || typeof node[k] !== 'object' || Array.isArray(node[k])) node[k] = {};
+        if (!node[k].properties || typeof node[k].properties !== 'object') node[k].properties = {};
+        node = node[k].properties;
+      }
+      node[parts[parts.length - 1]] = e.def;
+    }
+    return { properties: root };
+  }
+
+  // 批量编辑器的一行表单 → 字段定义；meta 列按类型落到 analyzer / format / normalizer
+  function rowToDef(row) {
+    const name = String((row && row.name) || '').trim();
+    if (!name) return { ok: false, error: '请填写字段名' };
+    if (!/^[A-Za-z_][A-Za-z0-9_.\-]*$/.test(name)) {
+      return { ok: false, error: '字段名只能包含字母、数字、_、-、.，且不能以数字开头' };
+    }
+    const type = String((row && row.type) || '').trim();
+    if (!type) return { ok: false, error: '请选择字段类型' };
+    const def = { type: type };
+    const meta = String((row && row.meta) || '').trim();
+    if (meta) {
+      if (type === 'text') def.analyzer = meta;
+      else if (type === 'date') def.format = meta;
+      else if (type === 'keyword') def.normalizer = meta;
+    }
+    const rawProps = String((row && row.props) || '').trim();
+    if (rawProps) {
+      let props;
+      try { props = JSON.parse(rawProps); }
+      catch (e) { return { ok: false, error: '属性 JSON 解析失败：' + e.message }; }
+      if (!props || typeof props !== 'object' || Array.isArray(props)) {
+        return { ok: false, error: '属性必须是一个 JSON 对象' };
+      }
+      Object.assign(def, props);
+    }
+    return { ok: true, def: def };
   }
 
   function indexSettingsSummary(settings) {
@@ -581,6 +660,9 @@
     normalizeCatRows,
     parseDetail,
     indexSettingsSummary,
+    fieldDefFromRaw,
+    buildMappingBody,
+    rowToDef,
     isCorsLike,
     cellText,
     flattenDoc,

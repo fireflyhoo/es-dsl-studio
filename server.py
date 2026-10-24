@@ -242,7 +242,17 @@ def check_index_name(index):
     return index
 
 
-def route_es(src, action, index=None, query=None):
+SAFE_ALIAS_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+
+
+def check_alias_name(alias):
+    """别名命名规则与索引一致：小写开头，可含数字、_、-、.，且不能与索引名冲突词相同。"""
+    if not alias or not SAFE_ALIAS_RE.match(alias):
+        raise ApiError(400, "非法别名：只能用小写字母 / 数字 / _ - .，且须以字母或数字开头")
+    return alias
+
+
+def route_es(src, action, index=None, query=None, body=None, alias=None):
     """把前端动作翻译成 ES 请求。"""
     enc = urllib.parse.quote(index, safe="*,-._") if index else ""
 
@@ -287,6 +297,32 @@ def route_es(src, action, index=None, query=None):
         if src.get("readonly"):
             raise ApiError(403, "该数据源处于只读模式，禁止删除索引")
         return es_request(src, "/%s" % enc, method="DELETE")
+
+    if action == "create":
+        if src.get("readonly"):
+            raise ApiError(403, "该数据源处于只读模式，禁止创建索引")
+        return es_request(src, "/%s" % enc, method="PUT", body=body)
+
+    if action == "put-mapping":
+        if src.get("readonly"):
+            raise ApiError(403, "该数据源处于只读模式，禁止修改字段")
+        if not isinstance(body, dict) or not body:
+            raise ApiError(400, "字段定义不能为空")
+        return es_request(src, "/%s/_mapping" % enc, method="PUT", body=body)
+
+    if action == "alias-add":
+        if src.get("readonly"):
+            raise ApiError(403, "该数据源处于只读模式，禁止添加别名")
+        if not isinstance(body, dict):
+            body = {}
+        aenc = urllib.parse.quote(alias, safe="-._")
+        return es_request(src, "/%s/_alias/%s" % (enc, aenc), method="PUT", body=body)
+
+    if action == "alias-remove":
+        if src.get("readonly"):
+            raise ApiError(403, "该数据源处于只读模式，禁止删除别名")
+        aenc = urllib.parse.quote(alias, safe="-._")
+        return es_request(src, "/%s/_alias/%s" % (enc, aenc), method="DELETE")
 
     raise ApiError(404, "未知操作：" + str(action))
 
@@ -449,6 +485,9 @@ class Handler(BaseHTTPRequestHandler):
                     if len(segments) == 5 and method == "DELETE":
                         self._json(200, route_es(src, "delete", index))
                         return
+                    if len(segments) == 5 and method == "PUT":
+                        self._json(200, route_es(src, "create", index, body=self._read_json()))
+                        return
                     if len(segments) == 6:
                         sub = segments[5]
                         if sub == "detail" and method == "GET":
@@ -456,6 +495,17 @@ class Handler(BaseHTTPRequestHandler):
                             return
                         if sub == "sample" and method == "GET":
                             self._json(200, route_es(src, "sample", index, query))
+                            return
+                        if sub == "mapping" and method == "PUT":
+                            self._json(200, route_es(src, "put-mapping", index, body=self._read_json()))
+                            return
+                    if len(segments) == 7 and segments[5] == "aliases":
+                        alias = check_alias_name(segments[6])
+                        if method == "PUT":
+                            self._json(200, route_es(src, "alias-add", index, body=self._read_json(), alias=alias))
+                            return
+                        if method == "DELETE":
+                            self._json(200, route_es(src, "alias-remove", index, alias=alias))
                             return
                 # 索引名里带 "/" 时路径段数会错位，按参数不合法处理更贴切
                 raise ApiError(404, "接口或路径参数不合法")
@@ -513,9 +563,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         self._dispatch("DELETE")
 
+    def do_PUT(self):
+        self._dispatch("PUT")
+
     def do_OPTIONS(self):
         self.send_response(204)
-        self.send_header("Allow", "GET, POST, DELETE, OPTIONS")
+        self.send_header("Allow", "GET, POST, PUT, DELETE, OPTIONS")
         self.end_headers()
 
 
