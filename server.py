@@ -40,6 +40,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 SOURCES_FILE = os.path.join(DATA_DIR, "sources.json")
+# 纯前端资源统一放在 web/ 下（桌面版 frontendDist 也指向它）；
+# 兼容旧布局：web/ 不存在时退回项目根。
+STATIC_DIR = os.path.join(BASE_DIR, "web") if os.path.isdir(os.path.join(BASE_DIR, "web")) else BASE_DIR
 
 TOKEN = (os.environ.get("ESDSL_TOKEN") or "").strip()
 PORT_ENV = os.environ.get("PORT")
@@ -480,8 +483,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(404, {"error": "Not Found"})
             return
 
-        target = os.path.normpath(os.path.join(BASE_DIR, *parts))
-        if not target.startswith(BASE_DIR + os.sep):
+        target = os.path.normpath(os.path.join(STATIC_DIR, *parts))
+        if not target.startswith(STATIC_DIR + os.sep):
             self._json(403, {"error": "Forbidden"})
             return
         if os.path.isdir(target):

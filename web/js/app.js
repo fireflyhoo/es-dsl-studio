@@ -4,16 +4,18 @@
  * ============================================================ */
 (function () {
   'use strict';
-  const { CATS, CATMAP, DEFS, mkNode, gen, importNode, validate, isEmpty } = window.ESQ;
+  const { CATS, CATMAP, DEFS, mkNode, gen, importNode, importAggs, validate, isEmpty } = window.ESQ;
   // 结果整形复用 es-client.js 的纯函数（那边有单元测试）
-  const { flattenDoc, aggRows, cellText } = window.ESDC;
+  const { flattenDoc, aggRows, aggMetricList, cellText } = window.ESDC;
 
   /* ---------------- 状态 ---------------- */
-  let root = null;
+  let root = null;        // 查询树根
+  let aggsRoot = null;    // 聚合树根（aggs 容器），与查询树并列，产出 body.aggs
   let selectedId = null;
   let settings = { size: '10', from: '', track_total_hits: 'true', min_score: '', extra: '' };
   let paletteFilter = '';
   const collapsedCats = {};
+  let aggSeq = 0; // 聚合默认名称计数器
 
   /* ---------------- DOM ---------------- */
   const $ = (s) => document.querySelector(s);
@@ -46,7 +48,7 @@
   /* ---------------- 持久化 ---------------- */
   function save() {
     try {
-      localStorage.setItem('esdsl.v1', JSON.stringify({ root, settings }));
+      localStorage.setItem('esdsl.v1', JSON.stringify({ root, aggsRoot, settings }));
     } catch (e) { /* 忽略配额错误 */ }
   }
   function load() {
@@ -55,12 +57,15 @@
       if (!raw) return false;
       const data = JSON.parse(raw);
       if (data.settings) settings = Object.assign(settings, data.settings);
-      if (data.root) { root = data.root; return true; }
+      if (data.root) root = data.root;
+      if (data.aggsRoot) aggsRoot = data.aggsRoot;
+      return !!data.root;
     } catch (e) { /* 损坏则忽略 */ }
     return false;
   }
 
   /* ---------------- 树操作 ---------------- */
+  // 查询树、聚合树两棵并列的树；find 依次查找
   function find(id, node, parent, key, index) {
     node = node === undefined ? root : node;
     parent = parent === undefined ? null : parent;
@@ -85,7 +90,11 @@
     }
     return null;
   }
-  function selected() { return selectedId ? (find(selectedId) || {}).node || null : null; }
+  // 先在查询树找，找不到再查聚合树
+  function findAny(id) {
+    return find(id, root, null, null, -1) || find(id, aggsRoot, null, null, -1);
+  }
+  function selected() { return selectedId ? (findAny(selectedId) || {}).node || null : null; }
   function inSubtree(ancestor, id) {
     if (!ancestor) return false;
     if (ancestor.id === id) return true;
@@ -114,11 +123,18 @@
     return 1 + kids.reduce((a, k) => a + countNodes(k), 0);
   }
 
-  // 类型是否能放进槽位
+  // 类型是否能放进槽位：fn / agg 是专属类别，只能进 accept 匹配的槽位
   function slotAccepts(slot, type) {
     const cat = DEFS[type].cat;
     if (slot.accept === 'fn') return cat === 'fn';
-    return cat !== 'fn';
+    if (slot.accept === 'agg') return cat === 'agg';
+    if (cat === 'fn' || cat === 'agg') return false;
+    return true;
+  }
+  function slotRejectMsg(type) {
+    const cat = DEFS[type].cat;
+    if (cat === 'fn') return '评分函数请拖到 function_score 的 functions 槽位';
+    return '聚合节点请拖到画布下方「聚合统计」区，或桶聚合的子聚合槽位';
   }
 
   // 向父节点容器添加子节点（key: 槽位 key 或 'list'；index 可选）
@@ -132,7 +148,7 @@
     const slot = (d.slots || []).find((s) => s.key === key);
     if (!slot) return false;
     if (!slotAccepts(slot, child.type)) {
-      toast(slot.accept === 'fn' ? '该槽位只接受评分函数' : '评分函数只能放进 function_score 的 functions 槽位');
+      toast(slotRejectMsg(child.type));
       return false;
     }
     const arr = parent.kids[key];
@@ -145,24 +161,29 @@
   }
 
   function detach(id) {
-    const loc = find(id);
+    const loc = findAny(id);
     if (!loc) return null;
-    if (!loc.parent) { root = null; return loc.node; }
+    if (!loc.parent) {
+      // 两棵树的根分别处理
+      if (loc.node === aggsRoot) aggsRoot = null;
+      else if (loc.node === root) root = null;
+      return loc.node;
+    }
     kidsArrayOf(loc).splice(loc.index, 1);
     return loc.node;
   }
 
   function deleteNode(id) {
-    const loc = find(id);
+    const loc = findAny(id);
     if (!loc) return;
     detach(id);
-    if (selectedId && !find(selectedId)) selectedId = null;
+    if (selectedId && !findAny(selectedId)) selectedId = null;
     renderAll();
     toast('已删除 ' + loc.node.type);
   }
 
   function duplicateNode(id) {
-    const loc = find(id);
+    const loc = findAny(id);
     if (!loc) return;
     const copy = cloneNode(loc.node);
     if (!loc.parent) { toast('根节点请先拖入组合查询，或包一层 bool'); return; }
@@ -172,7 +193,7 @@
   }
 
   function wrapBool(id) {
-    const loc = find(id);
+    const loc = findAny(id);
     if (!loc) return;
     const b = mkNode('bool');
     const node = detach(id);
@@ -191,31 +212,53 @@
     return (d.slots || []).find((s) => slotAccepts(s, type) && (s.multi || !(parent.kids[s.key] || []).length)) || null;
   }
 
-  // 拖拽落点处理。zone: {kind:'slot',pid,key} | {kind:'before',id} | {kind:'root'}
+  // 拖拽落点处理。zone: {kind:'slot',pid,key} | {kind:'before',id} | {kind:'root'} | {kind:'aggsroot'}
   // 约定：落到容器节点头上 = 加入其第一个可用槽位；落到叶子节点头上 = 插到它前面。
   function dropAt(zone, payloadKind, payload) {
-    const nodeType = payloadKind === 'type' ? payload : (find(payload) || {}).node && (find(payload) || {}).node.type;
+    const nodeType = payloadKind === 'type' ? payload : (findAny(payload) || {}).node && (findAny(payload) || {}).node.type;
     if (!nodeType) return;
+    const isAgg = DEFS[nodeType].cat === 'agg';
 
     /* ---- 预检（在 detach 之前，失败零副作用） ---- */
     if (payloadKind === 'node') {
-      const dragLoc = find(payload);
+      const dragLoc = findAny(payload);
       if (!dragLoc) return;
       if (payload === (zone.id || zone.pid)) return; // 拖到自己身上
       if (zone.kind === 'root' && dragLoc.node === root) return; // 根拖到画布
+      if (zone.kind === 'aggsroot' && dragLoc.node === aggsRoot) return; // 聚合容器拖进自己的面板
       const targetId = zone.id || zone.pid;
       if (targetId && inSubtree(dragLoc.node, targetId)) { toast('不能拖进自己的子节点里'); return; }
     }
 
+    /* ---- 聚合区根落点：只收聚合节点 ---- */
+    if (zone.kind === 'aggsroot') {
+      if (!isAgg) { toast('这里只能放聚合节点，查询请放到上方查询区'); return; }
+      if (nodeType === 'aggs' && aggsRoot) { toast('聚合区已存在，直接往里拖聚合节点即可'); return; }
+      let node = payloadKind === 'type' ? mkNode(payload) : detach(payload);
+      if (node.type !== 'aggs' && isEmpty(node.params.name)) node.params.name = uniqueAggName(DEFS[nodeType]);
+      if (node.type === 'aggs') { aggsRoot = node; }
+      else {
+        if (!aggsRoot) aggsRoot = mkNode('aggs');
+        aggsRoot.kids.push(node);
+      }
+      if (selectedId && !findAny(selectedId)) selectedId = null;
+      selectedId = node.id;
+      renderAll();
+      return;
+    }
+
+    /* ---- 查询区根落点：不收聚合节点 ---- */
+    if (zone.kind === 'root' && isAgg) { toast('聚合节点请拖到画布下方的「聚合统计」区'); return; }
+
     let parent = null, slot = null, insertIdx = -1;
     if (zone.kind === 'slot') {
-      parent = (find(zone.pid) || {}).node;
+      parent = (findAny(zone.pid) || {}).node;
       if (!parent) return;
       slot = zone.key === 'list' ? { key: 'list', multi: true }
         : Object.assign({}, (DEFS[parent.type].slots || []).find((s) => s.key === zone.key) || {});
       slot.key = zone.key;
     } else if (zone.kind === 'before') {
-      const loc = find(zone.id);
+      const loc = findAny(zone.id);
       if (!loc) return;
       const td = DEFS[loc.node.type];
       if (td.slots || td.listKids) {
@@ -235,11 +278,11 @@
     }
 
     if (slot && !slotAccepts(slot, nodeType)) {
-      toast(slot.accept === 'fn' ? '该槽位只接受评分函数' : '评分函数只能放进 function_score 的 functions 槽位');
+      toast(slotRejectMsg(nodeType));
       return;
     }
-    if (payloadKind === 'type' && DEFS[nodeType].cat === 'fn' && !(slot && slot.accept === 'fn')) {
-      toast('评分函数请拖到 function_score 的 functions 槽位');
+    if (isAgg && !(slot && slot.accept === 'agg')) {
+      toast(slotRejectMsg(nodeType));
       return;
     }
 
@@ -247,6 +290,7 @@
     let node;
     if (payloadKind === 'type') node = mkNode(payload);
     else node = detach(payload);
+    if (payloadKind === 'type' && isAgg && isEmpty(node.params.name)) node.params.name = uniqueAggName(DEFS[nodeType]);
 
     if (parent && slot) {
       const d = DEFS[parent.type];
@@ -276,6 +320,17 @@
     renderAll();
   }
 
+  // 聚合节点默认名称：terms_1 / avg_price_2 …
+  function uniqueAggName(d) {
+    return d.type.replace(/^agg_/, '') + '_' + (++aggSeq);
+  }
+
+  // 确保聚合根存在，返回容器
+  function ensureAggsRoot() {
+    if (!aggsRoot) aggsRoot = mkNode('aggs');
+    return aggsRoot;
+  }
+
   // 点击元素库 "+"：智能放置
   function quickAdd(type) {
     const d = DEFS[type];
@@ -287,6 +342,28 @@
         selectedId = n.id;
         renderAll();
       } else toast('请先选中一个 function_score 节点，再添加评分函数');
+      return;
+    }
+    if (d.cat === 'agg') {
+      // 聚合容器：没有就建，有了就选中
+      if (type === 'aggs') {
+        const c = ensureAggsRoot();
+        selectedId = c.id;
+        renderAll();
+        toast(aggsRoot.kids.length ? '已选中聚合统计区' : '聚合区已就绪，从左侧拖入聚合节点');
+        return;
+      }
+      const n = mkNode(type);
+      if (isEmpty(n.params.name)) n.params.name = uniqueAggName(d);
+      const sel = selected();
+      if (sel && DEFS[sel.type].cat === 'agg' && sel.kids && sel.kids.sub) {
+        // 选中了某个聚合：作为它的子聚合
+        sel.kids.sub.push(n);
+      } else {
+        ensureAggsRoot().kids.push(n);
+      }
+      selectedId = n.id;
+      renderAll();
       return;
     }
     const n = mkNode(type);
@@ -301,7 +378,7 @@
         sel.kids.push(n); selectedId = n.id; renderAll(); return;
       }
       // 叶子节点：作为同级插到它后面
-      const loc = find(sel.id);
+      const loc = findAny(sel.id);
       if (loc && loc.parent) {
         const slot = loc.key === 'list' ? { multi: true } : DEFS[loc.parent.type].slots.find((s) => s.key === loc.key);
         if (slot.multi && slotAccepts(slot, type)) {
@@ -378,9 +455,13 @@
     const caret = isContainer
       ? `<span class="caret ${node.collapsed ? '' : 'open'}" data-caret="${node.id}">▶</span>`
       : '<span class="caret"></span>';
+    // 聚合节点的徽标显示名称（重命名后一眼能看到 DSL 里的 key）
+    const badge = d.cat === 'agg' && node.type !== 'aggs'
+      ? esc(node.params.name || node.type)
+      : esc(node.type);
     head.innerHTML =
       caret +
-      `<span class="badge">${esc(node.type)}</span>` +
+      `<span class="badge">${badge}</span>` +
       `<span class="cn">${esc(d.cn)}</span>` +
       `<span class="summary">${esc(summaryOf(node))}</span>` +
       `<span class="acts">
@@ -451,6 +532,29 @@
     wrap.style.minHeight = '100%';
     wrap.appendChild(nodeEl(root));
     treeEl.appendChild(wrap);
+  }
+
+  /* ---------------- 聚合区渲染 ---------------- */
+  function renderAggsPanel() {
+    const host = $('#aggs-tree');
+    if (!host) return;
+    host.innerHTML = '';
+    const cnt = $('#aggs-count');
+    if (cnt) cnt.textContent = aggsRoot ? (aggsRoot.kids || []).length + ' 个聚合' : '';
+    if (!aggsRoot) {
+      const em = el('div', 'aggs-empty');
+      em.dataset.drop = 'aggsroot';
+      em.innerHTML =
+        '<span>统计指标？从左侧<span class="k">聚合统计</span>分类拖入聚合节点到这里</span>' +
+        '<button class="btn sm" id="btn-aggs-new">新建聚合区</button>';
+      host.appendChild(em);
+      $('#btn-aggs-new').addEventListener('click', () => quickAdd('aggs'));
+      return;
+    }
+    const wrap = el('div', 'aggs-wrap');
+    wrap.dataset.drop = 'aggsroot';
+    wrap.appendChild(nodeEl(aggsRoot));
+    host.appendChild(wrap);
   }
 
   /* ---------------- 属性检查器 ---------------- */
@@ -530,7 +634,8 @@
         1. 左侧元素库<strong>拖拽</strong>查询节点到画布，或点 <kbd>+</kbd> 快速添加<br>
         2. 组合查询（bool 等）有彩色槽位，拖进槽位即建立父子关系<br>
         3. 点选节点后在下方编辑参数，右侧 JSON 实时更新<br>
-        4. 拖动已有节点可调整位置和层级
+        4. 拖动已有节点可调整位置和层级<br>
+        5. 统计需求？把「聚合统计」分类的节点拖到画布下方聚合区
         <h4>槽位颜色</h4>
         <span class="slotkey" style="color:#0d9488">must</span> 必须满足 ·
         <span class="slotkey" style="color:#d97706">should</span> 可选加分 ·
@@ -538,6 +643,7 @@
         <span class="slotkey" style="color:#2563eb">filter</span> 过滤不计分
         <h4>小技巧</h4>
         · 往已有根查询上再拖一个查询，会自动包一层 bool<br>
+        · 桶聚合（terms / 日期直方图）里能嵌子聚合，先分组再求指标<br>
         · 不认识的 DSL 用「自定义 JSON」节点原样嵌入<br>
         · <kbd>Delete</kbd> 删除选中节点，<kbd>Esc</kbd> 取消选中<br>
         · 遇到编辑器没内置的新语法，导入时会自动变成「自定义 JSON」节点，不丢数据
@@ -566,11 +672,20 @@
     if (d.cat === 'fn') {
       inspectorEl.appendChild(el('div', 'help-card', '评分函数需放在 function_score 节点的 functions 槽位中才会生效。'));
     }
+    if (node.type === 'aggs') {
+      inspectorEl.appendChild(el('div', 'help-card',
+        '从左侧「聚合统计」分类拖入聚合节点即可。桶聚合（terms / 日期直方图 / 范围等）的子聚合槽位里还能继续嵌套，例如先按状态分组、再求均价。'));
+    } else if (d.cat === 'agg') {
+      const subN = ((node.kids && node.kids.sub) || []).length;
+      inspectorEl.appendChild(el('div', 'help-card',
+        '聚合名称是 DSL 里 aggs 的 key，同一级别不能重复。' +
+        (subN ? '当前已嵌套 ' + subN + ' 个子聚合。' : '把聚合节点拖到「子聚合」槽位，可在此聚合内部继续统计。')));
+    }
   }
 
   /* ---------------- JSON 输出 ---------------- */
   // 由画布直接控制的字段，导入时不会被附加体覆盖
-  const BODY_RESERVED = { query: 1, size: 1, from: 1, track_total_hits: 1, min_score: 1 };
+  const BODY_RESERVED = { query: 1, size: 1, from: 1, track_total_hits: 1, min_score: 1, aggs: 1 };
 
   function extraBody() {
     const raw = (settings.extra || '').trim();
@@ -589,7 +704,12 @@
     if (!isEmpty(settings.size)) body.size = Number(settings.size);
     if (settings.track_total_hits === 'false') body.track_total_hits = false;
     if (!isEmpty(settings.min_score)) body.min_score = Number(settings.min_score);
-    // 导入 DSL 时保留的附加字段：aggs / sort / _source / highlight …
+    // 聚合树 -> body.aggs（空容器不发）
+    if (aggsRoot) {
+      const m = gen(aggsRoot);
+      if (m && Object.keys(m).length) body.aggs = m;
+    }
+    // 导入 DSL 时保留的附加字段：sort / _source / highlight …
     const extra = extraBody();
     if (extra) {
       Object.keys(extra).forEach((k) => { if (!BODY_RESERVED[k]) body[k] = extra[k]; });
@@ -637,7 +757,7 @@
     if (rs.open && rs.result && rs.sentSig && rs.sentSig !== JSON.stringify(requestBody())) {
       if (!rs.stale) { rs.stale = true; renderStatus(); }
     }
-    const issues = validate(root);
+    const issues = validate(root, 'query').concat(aggsRoot ? validate(aggsRoot, 'aggs') : []);
     if (issues.length) {
       jsonWarnEl.classList.add('show');
       jsonWarnEl.innerHTML = issues.slice(0, 20).map((i) => `<div>${esc(i)}</div>`).join('') +
@@ -647,13 +767,17 @@
       jsonWarnEl.innerHTML = '';
     }
     // 状态栏
-    const n = countNodes(root);
+    const n = countNodes(root) + countNodes(aggsRoot);
+    const nAgg = aggsRoot ? (aggsRoot.kids || []).length : 0;
+    const nQ = Object.values(DEFS).filter((d) => d.cat !== 'agg').length;
+    const nAT = Object.values(DEFS).filter((d) => d.cat === 'agg' && d.type !== 'aggs').length;
     statusEl.innerHTML =
       `<span>节点 <b>${n}</b></span>` +
+      (nAgg ? `<span>聚合 <b>${nAgg}</b></span>` : '') +
       (issues.length
         ? `<span class="bad">▲ ${issues.length} 项待完善</span>`
-        : (root ? '<span class="ok">✓ DSL 有效</span>' : '<span>空画布</span>')) +
-      `<span class="spacer"></span><span>支持 56 种查询类型 · ES 7.x / 8.x</span>`;
+        : (root || aggsRoot ? '<span class="ok">✓ DSL 有效</span>' : '<span>空画布</span>')) +
+      `<span class="spacer"></span><span>支持 ${nQ} 种查询 + ${nAT} 种聚合 · ES 7.x / 8.x</span>`;
   }
 
   /* ---------------- 渲染总控 ---------------- */
@@ -677,6 +801,7 @@
   }
   function renderAll() {
     renderTree();
+    renderAggsPanel();
     renderInspector();
     renderJSON();
     save();
@@ -702,12 +827,20 @@
       if (obj.track_total_hits !== undefined) settings.track_total_hits = String(obj.track_total_hits);
       if (obj.min_score !== undefined) settings.min_score = String(obj.min_score);
       q = obj.query;
-      // 保留 aggs / sort / _source 等顶层字段，避免导入后被丢掉
+      // 保留 sort / _source / highlight 等顶层字段，避免导入后被丢掉（aggs 单独走聚合树）
       const rest = {};
       Object.keys(obj).forEach((k) => { if (!BODY_RESERVED[k]) rest[k] = obj[k]; });
       settings.extra = Object.keys(rest).length ? JSON.stringify(rest) : '';
+      // aggs 解析成聚合树；无法识别的结构原样留在附加字段里，不丢数据
+      aggsRoot = null;
+      if (obj.aggs !== undefined) {
+        const parsed = importAggs(obj.aggs);
+        if (parsed) aggsRoot = parsed;
+        else { rest.aggs = obj.aggs; settings.extra = JSON.stringify(rest); }
+      }
     } else {
       settings.extra = '';
+      aggsRoot = null;
     }
     const node = importNode(q);
     if (!node) { $('#m-err').textContent = '无法识别的查询结构'; return; }
@@ -716,7 +849,7 @@
     syncSettingsInputs();
     closeImport();
     renderAll();
-    toast('导入成功');
+    toast(aggsRoot ? '导入成功（含 ' + (aggsRoot.kids || []).length + ' 个聚合）' : '导入成功');
   }
 
   function syncSettingsInputs() {
@@ -788,47 +921,56 @@
       }
     });
 
-    // 树节点拖拽
-    treeEl.addEventListener('dragstart', (e) => {
-      const nd = e.target.closest('.qnode');
-      if (!nd) return;
-      e.dataTransfer.setData('text/plain', 'node:' + nd.dataset.id);
-      e.dataTransfer.effectAllowed = 'move';
-      nd.classList.add('dragging');
-    });
-    treeEl.addEventListener('dragend', (e) => {
-      const nd = e.target.closest('.qnode');
-      if (nd) nd.classList.remove('dragging');
-      clearDropHints();
-    });
-
-    // 树点击：选中 / 操作 / 折叠
-    treeEl.addEventListener('click', (e) => {
-      const caret = e.target.closest('[data-caret]');
-      if (caret) {
-        const loc = find(caret.dataset.caret);
-        if (loc) { loc.node.collapsed = !loc.node.collapsed; renderTree(); save(); }
-        e.stopPropagation();
-        return;
-      }
-      const act = e.target.closest('[data-act]');
-      if (act) {
-        const nd = act.closest('.qnode');
+    // 树节点拖拽（查询树 + 聚合树共用）
+    function bindTreeEvents(container) {
+      container.addEventListener('dragstart', (e) => {
+        const nd = e.target.closest('.qnode');
         if (!nd) return;
-        const id = nd.dataset.id;
-        if (act.dataset.act === 'del') deleteNode(id);
-        else if (act.dataset.act === 'dup') duplicateNode(id);
-        else if (act.dataset.act === 'wrap') wrapBool(id);
-        e.stopPropagation();
-        return;
-      }
-      const nd = e.target.closest('.qnode');
-      if (nd) {
-        selectedId = nd.dataset.id;
-        renderTree();
-        renderInspector();
-      }
-    });
+        e.dataTransfer.setData('text/plain', 'node:' + nd.dataset.id);
+        e.dataTransfer.effectAllowed = 'move';
+        nd.classList.add('dragging');
+      });
+      container.addEventListener('dragend', (e) => {
+        const nd = e.target.closest('.qnode');
+        if (nd) nd.classList.remove('dragging');
+        clearDropHints();
+      });
+
+      // 树点击：选中 / 操作 / 折叠
+      container.addEventListener('click', (e) => {
+        const caret = e.target.closest('[data-caret]');
+        if (caret) {
+          const loc = findAny(caret.dataset.caret);
+          if (loc) { loc.node.collapsed = !loc.node.collapsed; renderAll(); save(); }
+          e.stopPropagation();
+          return;
+        }
+        const act = e.target.closest('[data-act]');
+        if (act) {
+          const nd = act.closest('.qnode');
+          if (!nd) return;
+          const id = nd.dataset.id;
+          if (act.dataset.act === 'del') deleteNode(id);
+          else if (act.dataset.act === 'dup') duplicateNode(id);
+          else if (act.dataset.act === 'wrap') wrapBool(id);
+          e.stopPropagation();
+          return;
+        }
+        const nd = e.target.closest('.qnode');
+        if (nd) {
+          selectedId = nd.dataset.id;
+          renderTree();
+          renderAggsPanel();
+          renderInspector();
+        }
+      });
+    }
+    bindTreeEvents(treeEl);
+    const aggsTreeEl = $('#aggs-tree');
+    if (aggsTreeEl) bindTreeEvents(aggsTreeEl);
+    // 聚合区头部「+ 新建聚合区」
+    const btnAggsAdd = $('#btn-aggs-add');
+    if (btnAggsAdd) btnAggsAdd.addEventListener('click', () => quickAdd('aggs'));
 
     // 检查器操作按钮
     inspectorEl.addEventListener('click', (e) => {
@@ -853,6 +995,8 @@
         const em = $('#empty-state');
         if (em) em.classList.add('hover');
         treeEl.classList.add('drop-root');
+      } else if (zone.dataset.drop === 'aggsroot') {
+        zone.classList.add('hover');
       }
     });
     document.addEventListener('dragleave', (e) => {
@@ -873,6 +1017,8 @@
         dropAt({ kind: 'slot', pid: zone.dataset.pid, key: zone.dataset.slot }, kind, payload);
       } else if (zone.dataset.drop === 'before') {
         dropAt({ kind: 'before', id: zone.dataset.id }, kind, payload);
+      } else if (zone.dataset.drop === 'aggsroot') {
+        dropAt({ kind: 'aggsroot' }, kind, payload);
       } else {
         dropAt({ kind: 'root' }, kind, payload);
       }
@@ -884,8 +1030,8 @@
     $('#btn-copy2').addEventListener('click', copyJSON);
     $('#btn-download').addEventListener('click', downloadJSON);
     $('#btn-clear').addEventListener('click', () => {
-      if (!root) return;
-      root = null; selectedId = null; renderAll(); toast('画布已清空');
+      if (!root && !aggsRoot) return;
+      root = null; aggsRoot = null; selectedId = null; renderAll(); toast('画布已清空');
     });
     $('#btn-sample-top').addEventListener('click', () => {
       root = sampleTree(); selectedId = root.id; renderAll(); toast('已新建空 bool 查询');
@@ -1028,6 +1174,7 @@
   function clearDropHints() {
     document.querySelectorAll('.slot-body.hover').forEach((x) => x.classList.remove('hover'));
     document.querySelectorAll('.qnode.insert-before').forEach((x) => x.classList.remove('insert-before'));
+    document.querySelectorAll('[data-drop="aggsroot"].hover').forEach((x) => x.classList.remove('hover'));
     const em = $('#empty-state');
     if (em) em.classList.remove('hover');
     treeEl.classList.remove('drop-root');
@@ -1414,7 +1561,9 @@
         const t1 = (window.performance && performance.now) ? performance.now() : Date.now();
         rs.elapsed = Math.round(t1 - t0);
         rs.result = data;
-        if (data && data.hits && data.aggregations && !((data.hits.hits || []).length)) rs.tab = 'aggs';
+        // 带了聚合：或没有命中文档时，直接展示聚合页签
+        const hasAggsReq = body.aggs !== undefined;
+        if (data && data.aggregations && (hasAggsReq || !((data.hits && data.hits.hits) || []).length)) rs.tab = 'aggs';
         rs.running = false;
         if (btnRun) btnRun.classList.remove('busy');
         renderResult();
@@ -1488,6 +1637,8 @@
   function renderResult() {
     const body = $('#rs-body');
     if (!body) return;
+    // rs.tab 可能被运行结果自动切换（如带了聚合），这里同步按钮高亮
+    document.querySelectorAll('#rs-tabs button[data-tab]').forEach((x) => x.classList.toggle('on', x.dataset.tab === rs.tab));
     renderStatus();
     syncColsBtn(null, 0); // 先隐藏，表格分支再按需点亮
 
@@ -1534,14 +1685,37 @@
       return;
     }
     if (rs.tab === 'aggs') {
+      const metrics = aggMetricList(res.aggregations);
       const rows = aggRows(res.aggregations);
+      let h = '';
+      // 指标卡片：单值 / stats / percentiles
+      if (metrics.length) {
+        h += '<div class="agg-cards">';
+        metrics.forEach((m) => {
+          h += '<div class="agg-card"><div class="agg-card-h">' + esc(m.name) + '</div><div class="agg-card-v">';
+          m.values.forEach((v) => {
+            h += '<span class="agg-kv"><b>' + esc(v.k) + '</b><i>' + esc(cellText(v.v)) + '</i></span>';
+          });
+          h += '</div></div>';
+        });
+        h += '</div>';
+      }
       if (!rows.length) {
-        body.innerHTML = '<div class="rs-empty">本次查询没有聚合结果。<br>可以点「导入 JSON」粘贴带 <code>aggs</code> 的 DSL（顶层字段会原样保留），再运行。</div>';
+        if (!metrics.length) {
+          body.innerHTML = '<div class="rs-empty">本次查询没有聚合结果。<br>在画布下方「聚合统计」区添加聚合节点（或点「导入 JSON」粘贴带 <code>aggs</code> 的 DSL），再运行。</div>';
+          return;
+        }
+        body.innerHTML = h;
         return;
       }
-      let h = '<table class="rs-table"><thead><tr><th>聚合</th><th>桶 / 值</th><th class="num">文档数</th></tr></thead><tbody>';
+      // 分布条：桶行按 doc_count 占最大值的比例
+      const maxCount = rows.reduce((mx, r) => Math.max(mx, typeof r.count === 'number' ? r.count : 0), 0);
+      h += '<table class="rs-table"><thead><tr><th>聚合</th><th>桶 / 值</th><th class="agbar-th">分布</th><th class="num">文档数</th></tr></thead><tbody>';
       rows.slice(0, 500).forEach((r) => {
-        h += '<tr><td class="mono">' + esc(r.agg) + '</td><td>' + esc(cellText(r.key)) + '</td><td class="num">' + esc(cellText(r.count)) + '</td></tr>';
+        const bar = (typeof r.count === 'number' && maxCount > 0)
+          ? '<div class="agbar" title="' + esc(r.count) + ' / ' + maxCount + '"><i style="width:' + (r.count / maxCount * 100).toFixed(1) + '%"></i></div>'
+          : '';
+        h += '<tr><td class="mono">' + esc(r.agg) + '</td><td>' + esc(cellText(r.key)) + '</td><td>' + bar + '</td><td class="num">' + esc(cellText(r.count)) + '</td></tr>';
       });
       h += '</tbody></table>';
       if (rows.length > 500) h += '<div class="rs-empty">仅显示前 500 行，共 ' + rows.length + ' 行</div>';

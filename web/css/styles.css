@@ -212,6 +212,49 @@ body {
 }
 #tree.drop-root { outline: 2px dashed var(--accent); outline-offset: -6px; }
 
+/* ---------- 聚合统计区（查询树下方，产出 body.aggs） ---------- */
+#aggs-sec {
+  flex-shrink: 1;
+  min-height: 0;
+  max-height: 46%;
+  display: flex; flex-direction: column;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+}
+#aggs-sec-h {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+#aggs-sec-h .lbl { font-weight: 600; font-size: 13px; }
+#aggs-sec-h .sub { color: var(--faint); font-size: 12px; }
+#aggs-sec-h .spacer { flex: 1; }
+#aggs-count { color: var(--muted); font-size: 12px; white-space: nowrap; }
+#aggs-tree {
+  flex: 1;
+  overflow: auto;
+  padding: 10px 18px 14px;
+  background:
+    radial-gradient(circle, #e4dcf7 1px, transparent 1px) 0 0 / 22px 22px,
+    #fbfaff;
+}
+#aggs-tree .aggs-wrap { min-height: 100%; }
+#aggs-tree [data-drop="aggsroot"].hover {
+  outline: 2px dashed #7c3aed; outline-offset: -4px; border-radius: 10px;
+}
+.aggs-empty {
+  border: 2px dashed var(--border-strong);
+  border-radius: 10px;
+  padding: 9px 14px;
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  color: var(--muted); font-size: 13px;
+  background: rgba(255, 255, 255, 0.72);
+  transition: all 0.15s ease;
+}
+.aggs-empty.hover { border-color: #7c3aed; background: rgba(124, 58, 237, 0.06); }
+.aggs-empty .k { color: #7c3aed; font-weight: 600; }
+
 /* 空状态 */
 #empty-state {
   border: 2px dashed var(--border-strong);
@@ -349,7 +392,8 @@ body {
 #insp-resizer:hover, #insp-resizer.active { background: var(--accent-soft); }
 #inspector-panel {
   height: 300px;
-  flex-shrink: 0;
+  flex-shrink: 1; /* 结果抽屉展开后空间紧张时自动压缩，别把布局顶出窗口 */
+  min-height: 130px;
   display: flex; flex-direction: column;
   background: #fff;
 }
@@ -1294,6 +1338,47 @@ body.view-index #index-app { display: block; flex: 1; min-height: 0; padding: 12
 .rs-table tr:hover td { background: var(--bg); }
 .rs-table .num { text-align: right; font-family: var(--mono); }
 .rs-empty { padding: 24px; text-align: center; color: var(--muted); font-size: 13px; }
+
+/* 聚合结果：指标卡片 */
+.agg-cards {
+  display: flex; flex-wrap: wrap; gap: 8px;
+  padding: 12px 12px 6px;
+}
+.agg-card {
+  background: #fff;
+  border: 1px solid var(--border);
+  border-left: 3px solid #7c3aed;
+  border-radius: 8px;
+  padding: 7px 12px;
+  min-width: 140px;
+  box-shadow: var(--shadow-sm);
+}
+.agg-card-h {
+  font-family: var(--mono); font-size: 11px; color: var(--muted);
+  margin-bottom: 4px; max-width: 260px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.agg-card-v { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.agg-kv { display: inline-flex; align-items: baseline; gap: 5px; }
+.agg-kv b {
+  font-family: var(--mono); font-size: 10px; font-weight: 600;
+  color: var(--faint); text-transform: uppercase; letter-spacing: 0.03em;
+}
+.agg-kv i { font-style: normal; font-family: var(--mono); font-size: 13px; font-weight: 700; color: #6d28d9; }
+
+/* 聚合结果：分布条 */
+.rs-table .agbar-th { width: 26%; }
+.agbar {
+  height: 8px; min-width: 60px;
+  background: var(--bg);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.agbar i {
+  display: block; height: 100%;
+  background: linear-gradient(90deg, #7c3aed, #a78bfa);
+  border-radius: 4px;
+}
 
 .rs-json { margin: 0; padding: 12px; font: 12px var(--mono); line-height: 1.6; }
 .rs-json .k { color: #0f766e; }

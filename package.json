@@ -1,0 +1,16 @@
+{
+  "name": "es-dsl-studio",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ES DSL Studio - Elasticsearch DSL 查询工作台（Tauri 桌面版 + Python 服务端）",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "dev:web": "python server.py",
+    "test": "node test/core.test.js && node test/datasource.test.js"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.4"
+  }
+}
