@@ -82,6 +82,9 @@
     trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>',
     copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
     chevron: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>',
+    plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
+    search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>',
+    reset: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>',
   };
 
   /* ---------------- 类型着色（分组表在 es-client.js，索引管理与字段联想共用） ---------------- */
@@ -210,6 +213,8 @@
     const expanded = state.expandedSrc[src.id] === true;
     const el = h('div', 'ds-node');
     el.dataset.sid = src.id;
+    // 当前选中索引所属的数据源：头部柔和高亮（.ds-node.has-active）
+    if (state.active && state.active.sid === src.id) el.classList.add('has-active');
 
     const dotCls = conn.status === 'ok' ? 'ok' : conn.status === 'error' ? 'bad' : conn.status === 'loading' ? 'loading' : '';
     const head = h('div', 'ds-head');
@@ -435,24 +440,38 @@
     } else if (state.tab === 'raw') body.appendChild(renderRaw(data));
   }
 
-  function statCard(label, value, hint) {
-    return '<div class="stat"><span class="sk">' + esc(label) + '</span>' +
+  /* 指标色板：沿用查询构建的子句配色（teal 全文 / blue 词项 / amber 特殊 / violet 聚合 / cyan span / rose 嵌套） */
+  const STAT_COLORS = {
+    docs: '#0d9488', size: '#2563eb', shards: '#d97706', replicas: '#7c3aed',
+    fields: '#0e7490', aliases: '#e11d48',
+  };
+
+  function statCard(label, value, hint, color) {
+    return '<div class="stat"' + (color ? ' style="--sc:' + color + '"' : '') + '><span class="sk">' + esc(label) + '</span>' +
       '<b>' + esc(value) + '</b>' + (hint ? '<span class="sh">' + esc(hint) + '</span>' : '') + '</div>';
+  }
+
+  /* 概览分区标题 */
+  function secHead(title, sub) {
+    return '<div class="ov-sec-h">' + esc(title) +
+      (sub ? '<span class="sub">' + esc(sub) + '</span>' : '') + '</div>';
   }
 
   function renderOverview(data, meta, src) {
     const box = h('div', 'tab-pane');
     const s = indexSettingsSummary(data.settings);
+    box.insertAdjacentHTML('beforeend', secHead('运行指标', '文档 · 存储 · 分片实时统计'));
     const stats = h('div', 'stat-grid');
     stats.innerHTML =
-      statCard('文档数', formatCount(meta.docs), '') +
-      statCard('存储大小', formatBytes(meta.sizeBytes), '含副本') +
-      statCard('主分片', String(meta.shards === null || meta.shards === undefined ? s.shards : meta.shards), 'pri') +
-      statCard('副本数', String(meta.replicas === null || meta.replicas === undefined ? s.replicas : meta.replicas), 'rep') +
-      statCard('字段数', String(data.fields.length), '含多字段') +
-      statCard('别名', String(Object.keys(data.aliases).length), '');
+      statCard('文档数', formatCount(meta.docs), '', STAT_COLORS.docs) +
+      statCard('存储大小', formatBytes(meta.sizeBytes), '含副本', STAT_COLORS.size) +
+      statCard('主分片', String(meta.shards === null || meta.shards === undefined ? s.shards : meta.shards), 'pri', STAT_COLORS.shards) +
+      statCard('副本数', String(meta.replicas === null || meta.replicas === undefined ? s.replicas : meta.replicas), 'rep', STAT_COLORS.replicas) +
+      statCard('字段数', String(data.fields.length), '含多字段', STAT_COLORS.fields) +
+      statCard('别名', String(Object.keys(data.aliases).length), '', STAT_COLORS.aliases);
     box.appendChild(stats);
 
+    box.insertAdjacentHTML('beforeend', secHead('基本信息'));
     const info = h('div', 'info-table');
     const created = s.creationDate ? new Date(s.creationDate).toLocaleString('zh-CN') : '—';
     const pairs = [
@@ -474,8 +493,8 @@
 
     const counts = typeCounts(data.fields);
     if (counts.length) {
+      box.insertAdjacentHTML('beforeend', secHead('字段类型分布', '点击「字段映射」页签查看全部字段'));
       const t = h('div', 'type-summary');
-      t.innerHTML = '<div class="ts-h">字段类型分布</div>';
       const chips = h('div', 'ts-chips');
       for (const c of counts) {
         const chip = h('span', 'ts-chip');
@@ -503,9 +522,9 @@
     sel.innerHTML = '<option value="all">全部类型（' + data.fields.length + '）</option>' +
       counts.map((c) => '<option value="' + esc(c.type) + '"' + (state.fieldType === c.type ? ' selected' : '') +
         ' data-type="' + esc(c.type) + '">' + esc(c.type) + '（' + c.count + '）</option>').join('');
-    const copyBtn = h('button', 'btn sm', '复制可见字段');
+    const copyBtn = h('button', 'btn sm', ICON.copy + '复制可见字段');
     copyBtn.dataset.act = 'copy-visible-fields';
-    const batchBtn = h('button', 'btn sm primary', ICON.edit + '批量编辑字段');
+    const batchBtn = h('button', 'btn sm primary', ICON.edit + '编辑');
     batchBtn.dataset.act = 'batch-edit';
     batchBtn.title = '批量添加 / 编辑字段，保存到当前环境，并可生成同步到其他环境的 DSL';
     bar.appendChild(search);
@@ -520,7 +539,9 @@
     box.appendChild(cnt);
 
     if (!list.length) {
-      box.appendChild(h('div', 'detail-loading', '没有匹配的字段'));
+      const empty = h('div', 'tab-empty');
+      empty.innerHTML = '<b>没有匹配的字段</b><div>换个关键词，或把类型筛选项调回「全部类型」</div>';
+      box.appendChild(empty);
       return box;
     }
 
@@ -558,9 +579,12 @@
     const s = indexSettingsSummary(data.settings);
     const bar = h('div', 'fields-toolbar');
     const tip = h('span', 'mono dim', 'index.number_of_shards=' + s.shards + '  index.number_of_replicas=' + s.replicas);
+    const spacer = h('span');
+    spacer.style.flex = '1';
     const btn = h('button', 'btn sm', '复制 JSON');
     btn.dataset.act = 'copy-settings';
     bar.appendChild(tip);
+    bar.appendChild(spacer);
     bar.appendChild(btn);
     box.appendChild(bar);
     box.appendChild(h('pre', 'json-view', highlightJSON(data.settings)));
@@ -573,7 +597,7 @@
 
     const bar = h('div', 'fields-toolbar');
     const cnt = h('span', 'mono dim', '共 ' + names.length + ' 个别名');
-    const addBtn = h('button', 'btn sm primary', '+ 添加别名');
+    const addBtn = h('button', 'btn sm primary', ICON.plus + '添加别名');
     addBtn.dataset.act = 'add-alias';
     addBtn.title = '给该索引添加别名（PUT _alias）';
     const spacer = h('span');
@@ -584,7 +608,9 @@
     box.appendChild(bar);
 
     if (!names.length) {
-      box.appendChild(h('div', 'detail-loading', '该索引没有配置别名。别名可用于灰度切换、只读视图、跨索引检索等场景。'));
+      const empty = h('div', 'tab-empty');
+      empty.innerHTML = '<b>该索引没有配置别名</b><div>别名可用于灰度切换、只读视图、跨索引检索等场景</div>';
+      box.appendChild(empty);
       return box;
     }
     const table = h('table', 'fields-table');
@@ -958,7 +984,7 @@
 
     // 条件操作区
     const condActs = h('div', 'data-cond-acts');
-    const addCond = h('button', 'btn sm', '+ 条件');
+    const addCond = h('button', 'btn sm', ICON.plus + '条件');
     addCond.dataset.act = 'docs-add-cond';
     addCond.title = '添加一个筛选条件';
     condActs.appendChild(addCond);
@@ -970,11 +996,11 @@
         '<option value="should"' + (view.logic === 'should' ? ' selected' : '') + '>或者（OR）</option>';
       condActs.appendChild(logic);
     }
-    const qBtn = h('button', 'btn sm primary', '查询');
+    const qBtn = h('button', 'btn sm primary', ICON.search + '查询');
     qBtn.dataset.act = 'docs-query';
     qBtn.title = '按当前条件重新查询';
     condActs.appendChild(qBtn);
-    const resetBtn = h('button', 'btn sm', '重置');
+    const resetBtn = h('button', 'btn sm', ICON.reset + '重置');
     resetBtn.dataset.act = 'docs-reset';
     resetBtn.title = '清空筛选条件与排序';
     condActs.appendChild(resetBtn);
@@ -982,7 +1008,7 @@
 
     // 右侧动作区
     const acts = h('div', 'data-acts');
-    const refresh = h('button', 'btn sm', '刷新');
+    const refresh = h('button', 'btn sm', ICON.refresh + '刷新');
     refresh.dataset.act = 'docs-refresh';
     refresh.title = '重新执行当前查询';
     acts.appendChild(refresh);
@@ -1000,13 +1026,13 @@
     acts.appendChild(sizeSel);
 
     if (!readonlySrc) {
-      const addBtn = h('button', 'btn sm primary', '+ 添加记录');
+      const addBtn = h('button', 'btn sm primary', ICON.plus + '添加记录');
       addBtn.dataset.act = 'docs-add';
       addBtn.title = '向该索引写入一条新文档';
       acts.appendChild(addBtn);
 
       const selCount = Object.keys(view.sel).length;
-      const delBtn = h('button', 'btn sm danger', '删除选中' + (selCount ? '（' + selCount + '）' : ''));
+      const delBtn = h('button', 'btn sm danger', ICON.trash + '删除选中' + (selCount ? '（' + selCount + '）' : ''));
       delBtn.dataset.act = 'docs-del-selected';
       delBtn.disabled = !selCount;
       delBtn.title = selCount ? '删除勾选的 ' + selCount + ' 条记录' : '先在表格里勾选记录';
@@ -1049,7 +1075,10 @@
     const bar = h('div', 'fields-toolbar');
     const btn = h('button', 'btn sm', '复制原始响应');
     btn.dataset.act = 'copy-raw';
+    const spacer = h('span');
+    spacer.style.flex = '1';
     bar.appendChild(h('span', 'mono dim', 'mapping 原始结构（未扁平化）'));
+    bar.appendChild(spacer);
     bar.appendChild(btn);
     box.appendChild(bar);
     box.appendChild(h('pre', 'json-view', highlightJSON(data.rawMapping)));
