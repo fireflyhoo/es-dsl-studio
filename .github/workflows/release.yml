@@ -1,0 +1,112 @@
+name: Release
+
+# 推送 v* tag（如 v1.0.0）时触发：
+#   1. 先创建 GitHub Release
+#   2. 三平台（macOS universal / Windows / Linux）并行构建并上传产物
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  # 第一步：先建好 Release 并拿到 id，避免多平台任务并发上传相互覆盖
+  create-release:
+    name: 创建 Release
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.create.outputs.id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: 创建 Release（${{ github.ref_name }}）
+        id: create
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ES DSL Studio ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          body: |
+            ## ES DSL Studio ${{ github.ref_name }}
+
+            Elasticsearch DSL 查询工作台，三平台安装包：
+
+            | 平台 | 产物 | 说明 |
+            |------|------|------|
+            | macOS | `.dmg` | universal 二进制（Intel + Apple Silicon 通用） |
+            | Windows | `.exe`(NSIS) / `.msi` | Windows 10/11，需 WebView2 运行时 |
+            | Linux | `.deb` / `.rpm` / `.AppImage` | x86_64 |
+
+            > 安装包未做代码签名，首次打开需在系统设置中允许（macOS：右键「打开」）。
+            > 配置保存在 `~/.es-dsl-studio/sources.json`，与旧版项目目录 `data/` 自动兼容迁移。
+
+  # 第二步：三平台并行构建，产物传到上面建好的 Release
+  build:
+    name: 构建 ${{ matrix.os }} / ${{ matrix.target }}
+    needs: create-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Apple Silicon runner 上出 universal 包（x86_64 + aarch64 lipo）
+          - os: macos-latest
+            target: universal-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust 工具链（${{ matrix.target }}）
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust 构建缓存
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # Tauri v2 Linux 系统依赖（webkit2gtk-4.1 + AppImage 所需 patchelf）
+      - name: 安装 Linux 系统依赖
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl wget file \
+            libxdo-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: 安装前端依赖（仅 Tauri CLI）
+        run: npm ci
+
+      - name: 构建 ${{ matrix.target }}
+        run: npx tauri build --target ${{ matrix.target }} --bundles all
+
+      - name: 上传产物到 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          release_id: ${{ needs.create-release.outputs.release_id }}
+          files: |
+            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+            src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
+            src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/rpm/*.rpm
+            src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
