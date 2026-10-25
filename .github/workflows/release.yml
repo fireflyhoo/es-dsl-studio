@@ -52,21 +52,26 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Apple Silicon runner 上出 universal 包（x86_64 + aarch64 lipo）
+          # Apple Silicon runner 上出 universal 包：
+          # universal-apple-darwin 是 tauri-cli 的合成 target（自动 lipo 两架构），
+          # 但 rustup 不认识它，需单独装两个真实架构的 std
           - os: macos-latest
             target: universal-apple-darwin
+            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            rust_targets: x86_64-pc-windows-msvc
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            rust_targets: x86_64-unknown-linux-gnu
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: 安装 Rust 工具链（${{ matrix.target }}）
+      - name: 安装 Rust 工具链（${{ matrix.rust_targets }}）
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.rust_targets }}
 
       - name: Rust 构建缓存
         uses: Swatinem/rust-cache@v2
