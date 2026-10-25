@@ -25,123 +25,15 @@ fn probe_result(payload: serde_json::Value) {
     std::process::exit(0);
 }
 
-// ---- 调试桥截图：WebView2 CapturePreview ----
-// PrintWindow/BitBlt 对 DirectComposition 渲染的 WebView2 拿不到正确帧
-// （屏幕 150% 缩放下失真更明显），改用官方 CapturePreview 直接把页面渲成 PNG。
-// 分三段式命令，避免阻塞主线程消息泵：
-//   capture_preview_start  发起捕获（流存全局）
-//   capture_preview_poll   轮询流字节数（>0 即捕获完成）
-//   capture_preview_save   把流读出来落盘
-//
-// 仅 Windows 有 WebView2；macOS / Linux 提供同签名桩，保证 invoke_handler
-// 注册表一致、全平台可编译。
-#[cfg(target_os = "windows")]
+// ---- 调试桥截图：历史实现为 Windows WebView2 CapturePreview ----
+// 曾按平台区分：Windows 用 webview2-com/windows crate 调 CapturePreview，
+// 其他平台为同签名桩。该调试桥仅服务于 --eval 截图自动化（前端零引用），
+// 但 Windows 专属依赖多次拖垮跨平台发布构建，且截图验证已改用外部
+// screencapture 完成，故统一收敛为跨平台桩：调用返回明确错误提示。
 mod capture {
-    use webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG;
-    use windows::Win32::Foundation::HGLOBAL;
-    use windows::Win32::System::Com::STREAM_SEEK_SET;
-    use windows::Win32::System::Com::StructuredStorage::CreateStreamOnHGlobal;
-
-    struct SyncStream(std::sync::Mutex<Option<windows::Win32::System::Com::IStream>>);
-    // IStream 内部是 COM 指针（NonNull），默认 !Sync；这里手动担保跨线程访问安全
-    unsafe impl Sync for SyncStream {}
-    static PREVIEW_STREAM: SyncStream = SyncStream(std::sync::Mutex::new(None));
-
-    #[tauri::command]
-    pub fn capture_preview_start(app: tauri::AppHandle) -> Result<String, String> {
-        let win = app
-            .get_webview_window("main")
-            .ok_or_else(|| "main window not found".to_string())?;
-        let result = std::sync::Arc::new(std::sync::Mutex::new(Ok("started".to_string())));
-        let result_cb = result.clone();
-        win.with_webview(move |w| {
-            let r = (|| -> Result<String, String> {
-                let controller = w.controller();
-                let handler = webview2_com::CapturePreviewCompletedHandler::create(Box::new(
-                    |_r: windows::core::Result<()>| windows::core::Result::Ok(()),
-                ));
-                unsafe {
-                    let core = controller.CoreWebView2().map_err(|e| e.to_string())?;
-                    let stream = CreateStreamOnHGlobal(HGLOBAL::default(), true)
-                        .map_err(|e| format!("CreateStreamOnHGlobal: {e}"))?;
-                    core.CapturePreview(
-                        COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG,
-                        &stream,
-                        &handler,
-                    )
-                    .map_err(|e| format!("CapturePreview: {e}"))?;
-                    *PREVIEW_STREAM.0.lock().unwrap() = Some(stream);
-                }
-                Ok("started".into())
-            })();
-            *result_cb.lock().unwrap() = r;
-        })
-        .map_err(|e| e.to_string())?;
-        let r = result.lock().unwrap().clone();
-        if let Err(ref e) = r {
-            eprintln!("[esdsl] capture_preview_start: {e}");
-        }
-        r
-    }
-
-    #[tauri::command]
-    pub fn capture_preview_poll() -> u64 {
-        let guard = PREVIEW_STREAM.0.lock().unwrap();
-        match guard.as_ref() {
-            Some(stream) => unsafe {
-                let mut stat: windows::Win32::System::Com::STATSTG = std::mem::zeroed();
-                if stream.Stat(&mut stat, windows::Win32::System::Com::STATFLAG_NONAME).is_ok() {
-                    stat.cbSize
-                } else {
-                    0
-                }
-            },
-            None => 0,
-        }
-    }
-
-    #[tauri::command]
-    pub fn capture_preview_save(path: String) -> Result<usize, String> {
-        let guard = PREVIEW_STREAM.0.lock().unwrap();
-        let stream = guard.as_ref().ok_or_else(|| "capture not started".to_string())?;
-        unsafe {
-            stream
-                .Seek(0, STREAM_SEEK_SET, None)
-                .map_err(|e| e.to_string())?;
-            let mut buf: Vec<u8> = Vec::new();
-            let mut chunk = vec![0u8; 65536];
-            loop {
-                let mut read: u32 = 0;
-                let hr = stream.Read(
-                    chunk.as_mut_ptr() as *mut _,
-                    chunk.len() as u32,
-                    Some(&mut read),
-                );
-                if hr.is_err() {
-                    return Err(format!("IStream::Read: {:?}", hr));
-                }
-                if read == 0 {
-                    break;
-                }
-                buf.extend_from_slice(&chunk[..read as usize]);
-            }
-            if buf.is_empty() {
-                return Err("stream is empty".into());
-            }
-            std::fs::write(&path, &buf).map_err(|e| e.to_string())?;
-            Ok(buf.len())
-        }
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-mod capture {
-    //! macOS / Linux 没有 WebView2：同签名桩，保证跨平台编译、
-    //! invoke_handler 注册表一致（调用时返回错误提示）。
-
     #[tauri::command]
     pub fn capture_preview_start(_app: tauri::AppHandle) -> Result<String, String> {
-        Err("页面截图调试桥仅支持 Windows（WebView2 CapturePreview）".into())
+        Err("页面截图调试桥已下线（跨平台发布构建不需要 WebView2 依赖），请改用外部截图工具".into())
     }
 
     #[tauri::command]
@@ -151,7 +43,7 @@ mod capture {
 
     #[tauri::command]
     pub fn capture_preview_save(_path: String) -> Result<usize, String> {
-        Err("页面截图调试桥仅支持 Windows（WebView2 CapturePreview）".into())
+        Err("页面截图调试桥已下线（跨平台发布构建不需要 WebView2 依赖），请改用外部截图工具".into())
     }
 }
 

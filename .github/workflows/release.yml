@@ -104,7 +104,18 @@ jobs:
       # bundle.targets: ["all"] 已在 tauri.conf.json 配置，按平台自动产出全部安装包
       # （注意：--bundles 的合法值随平台而异，且不接受 "all"，不要传）
       - name: 构建 ${{ matrix.target }}
-        run: npx tauri build --target ${{ matrix.target }}
+        run: |
+          set +e
+          npx tauri build --target ${{ matrix.target }} > /tmp/build.log 2>&1
+          code=$?
+          set -e
+          echo "构建退出码: $code"
+          if [ "$code" -ne 0 ]; then
+            # 失败时把关键错误行提为 check-run 注解（无需登录即可经 API 读取，便于快速定位）
+            grep -E "^error" /tmp/build.log | head -10 | sed 's/^/::error::/' || true
+            tail -3 /tmp/build.log | sed 's/^/::error::/' || true
+          fi
+          exit $code
 
       - name: 上传产物到 Release
         uses: softprops/action-gh-release@v2
