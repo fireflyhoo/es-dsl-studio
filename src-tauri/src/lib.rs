@@ -3,8 +3,8 @@
 //! 与 Python 版 server.py 的对应关系：
 //!   - 静态资源：server.py 的 _serve_static   → proto.rs（esdsl:// 自定义协议 + asset resolver）
 //!   - /api 路由：server.py 的 _dispatch      → api.rs
-//!   - ES 代理  ：server.py 的 es_request     → es.rs（reqwest blocking + SChannel TLS）
-//!   - 数据源库 ：server.py 的 sources.json   → store.rs（app_data_dir/sources.json）
+//!   - ES 代理  ：server.py 的 es_request     → es.rs（reqwest blocking + rustls TLS，跨平台免 OpenSSL）
+//!   - 数据源库 ：server.py 的 sources.json   → store.rs（~/.es-dsl-studio/sources.json）
 //!
 //! 前端 fetch('/api/...') 全部走 esdsl://localhost，无需改动 web/ 下任何代码。
 
@@ -32,109 +32,144 @@ fn probe_result(payload: serde_json::Value) {
 //   capture_preview_start  发起捕获（流存全局）
 //   capture_preview_poll   轮询流字节数（>0 即捕获完成）
 //   capture_preview_save   把流读出来落盘
-struct SyncStream(std::sync::Mutex<Option<windows::Win32::System::Com::IStream>>);
-// IStream 内部是 COM 指针（NonNull），默认 !Sync；这里手动担保跨线程访问安全
-unsafe impl Sync for SyncStream {}
-static PREVIEW_STREAM: SyncStream = SyncStream(std::sync::Mutex::new(None));
-
-#[tauri::command]
-fn capture_preview_start(app: tauri::AppHandle) -> Result<String, String> {
+//
+// 仅 Windows 有 WebView2；macOS / Linux 提供同签名桩，保证 invoke_handler
+// 注册表一致、全平台可编译。
+#[cfg(target_os = "windows")]
+mod capture {
     use webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG;
-    let win = app
-        .get_webview_window("main")
-        .ok_or_else(|| "main window not found".to_string())?;
-    let result = std::sync::Arc::new(std::sync::Mutex::new(Ok("started".to_string())));
-    let result_cb = result.clone();
-    win.with_webview(move |w| {
-        let r = (|| -> Result<String, String> {
-            let controller = w.controller();
-            let handler = webview2_com::CapturePreviewCompletedHandler::create(Box::new(
-                |_r: windows::core::Result<()>| windows::core::Result::Ok(()),
-            ));
-            unsafe {
-                let core = controller.CoreWebView2().map_err(|e| e.to_string())?;
-                let stream = windows::Win32::System::Com::StructuredStorage::CreateStreamOnHGlobal(
-                    windows::Win32::Foundation::HGLOBAL::default(),
-                    true,
-                )
-                .map_err(|e| format!("CreateStreamOnHGlobal: {e}"))?;
-                core.CapturePreview(
-                    COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG,
-                    &stream,
-                    &handler,
-                )
-                .map_err(|e| format!("CapturePreview: {e}"))?;
-                *PREVIEW_STREAM.0.lock().unwrap() = Some(stream);
-            }
-            Ok("started".into())
-        })();
-        *result_cb.lock().unwrap() = r;
-    })
-    .map_err(|e| e.to_string())?;
-    let r = result.lock().unwrap().clone();
-    if let Err(ref e) = r {
-        eprintln!("[esdsl] capture_preview_start: {e}");
+    use windows::Win32::Foundation::HGLOBAL;
+    use windows::Win32::System::Com::STREAM_SEEK_SET;
+    use windows::Win32::System::Com::StructuredStorage::CreateStreamOnHGlobal;
+
+    struct SyncStream(std::sync::Mutex<Option<windows::Win32::System::Com::IStream>>);
+    // IStream 内部是 COM 指针（NonNull），默认 !Sync；这里手动担保跨线程访问安全
+    unsafe impl Sync for SyncStream {}
+    static PREVIEW_STREAM: SyncStream = SyncStream(std::sync::Mutex::new(None));
+
+    #[tauri::command]
+    pub fn capture_preview_start(app: tauri::AppHandle) -> Result<String, String> {
+        let win = app
+            .get_webview_window("main")
+            .ok_or_else(|| "main window not found".to_string())?;
+        let result = std::sync::Arc::new(std::sync::Mutex::new(Ok("started".to_string())));
+        let result_cb = result.clone();
+        win.with_webview(move |w| {
+            let r = (|| -> Result<String, String> {
+                let controller = w.controller();
+                let handler = webview2_com::CapturePreviewCompletedHandler::create(Box::new(
+                    |_r: windows::core::Result<()>| windows::core::Result::Ok(()),
+                ));
+                unsafe {
+                    let core = controller.CoreWebView2().map_err(|e| e.to_string())?;
+                    let stream = CreateStreamOnHGlobal(HGLOBAL::default(), true)
+                        .map_err(|e| format!("CreateStreamOnHGlobal: {e}"))?;
+                    core.CapturePreview(
+                        COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG,
+                        &stream,
+                        &handler,
+                    )
+                    .map_err(|e| format!("CapturePreview: {e}"))?;
+                    *PREVIEW_STREAM.0.lock().unwrap() = Some(stream);
+                }
+                Ok("started".into())
+            })();
+            *result_cb.lock().unwrap() = r;
+        })
+        .map_err(|e| e.to_string())?;
+        let r = result.lock().unwrap().clone();
+        if let Err(ref e) = r {
+            eprintln!("[esdsl] capture_preview_start: {e}");
+        }
+        r
     }
-    r
+
+    #[tauri::command]
+    pub fn capture_preview_poll() -> u64 {
+        let guard = PREVIEW_STREAM.0.lock().unwrap();
+        match guard.as_ref() {
+            Some(stream) => unsafe {
+                let mut stat: windows::Win32::System::Com::STATSTG = std::mem::zeroed();
+                if stream.Stat(&mut stat, windows::Win32::System::Com::STATFLAG_NONAME).is_ok() {
+                    stat.cbSize
+                } else {
+                    0
+                }
+            },
+            None => 0,
+        }
+    }
+
+    #[tauri::command]
+    pub fn capture_preview_save(path: String) -> Result<usize, String> {
+        let guard = PREVIEW_STREAM.0.lock().unwrap();
+        let stream = guard.as_ref().ok_or_else(|| "capture not started".to_string())?;
+        unsafe {
+            stream
+                .Seek(0, STREAM_SEEK_SET, None)
+                .map_err(|e| e.to_string())?;
+            let mut buf: Vec<u8> = Vec::new();
+            let mut chunk = vec![0u8; 65536];
+            loop {
+                let mut read: u32 = 0;
+                let hr = stream.Read(
+                    chunk.as_mut_ptr() as *mut _,
+                    chunk.len() as u32,
+                    Some(&mut read),
+                );
+                if hr.is_err() {
+                    return Err(format!("IStream::Read: {:?}", hr));
+                }
+                if read == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..read as usize]);
+            }
+            if buf.is_empty() {
+                return Err("stream is empty".into());
+            }
+            std::fs::write(&path, &buf).map_err(|e| e.to_string())?;
+            Ok(buf.len())
+        }
+    }
 }
 
-#[tauri::command]
-fn capture_preview_poll() -> u64 {
-    let guard = PREVIEW_STREAM.0.lock().unwrap();
-    match guard.as_ref() {
-        Some(stream) => unsafe {
-            let mut stat: windows::Win32::System::Com::STATSTG = std::mem::zeroed();
-            if stream.Stat(&mut stat, windows::Win32::System::Com::STATFLAG_NONAME).is_ok() {
-                stat.cbSize
-            } else {
-                0
-            }
-        },
-        None => 0,
+#[cfg(not(target_os = "windows"))]
+mod capture {
+    //! macOS / Linux 没有 WebView2：同签名桩，保证跨平台编译、
+    //! invoke_handler 注册表一致（调用时返回错误提示）。
+
+    #[tauri::command]
+    pub fn capture_preview_start(_app: tauri::AppHandle) -> Result<String, String> {
+        Err("页面截图调试桥仅支持 Windows（WebView2 CapturePreview）".into())
+    }
+
+    #[tauri::command]
+    pub fn capture_preview_poll() -> u64 {
+        0
+    }
+
+    #[tauri::command]
+    pub fn capture_preview_save(_path: String) -> Result<usize, String> {
+        Err("页面截图调试桥仅支持 Windows（WebView2 CapturePreview）".into())
     }
 }
 
-#[tauri::command]
-fn capture_preview_save(path: String) -> Result<usize, String> {
-    let guard = PREVIEW_STREAM.0.lock().unwrap();
-    let stream = guard.as_ref().ok_or_else(|| "capture not started".to_string())?;
-    unsafe {
-        stream
-            .Seek(0, windows::Win32::System::Com::STREAM_SEEK_SET, None)
-            .map_err(|e| e.to_string())?;
-        let mut buf: Vec<u8> = Vec::new();
-        let mut chunk = vec![0u8; 65536];
-        loop {
-            let mut read: u32 = 0;
-            let hr = stream.Read(
-                chunk.as_mut_ptr() as *mut _,
-                chunk.len() as u32,
-                Some(&mut read),
-            );
-            if hr.is_err() {
-                return Err(format!("IStream::Read: {:?}", hr));
-            }
-            if read == 0 {
-                break;
-            }
-            buf.extend_from_slice(&chunk[..read as usize]);
-        }
-        if buf.is_empty() {
-            return Err("stream is empty".into());
-        }
-        std::fs::write(&path, &buf).map_err(|e| e.to_string())?;
-        Ok(buf.len())
-    }
+/// tauri::generate_context!() 在 macOS 会嵌入 Info.plist（生成 #[no_mangle] 静态符号），
+/// 同一个 crate 里多次展开会报 "symbol `_EMBED_INFO_PLIST` is already defined"。
+/// 因此只在这里展开一次，run() 与 run_eval() 共用。
+fn app_context() -> tauri::Context {
+    tauri::generate_context!()
 }
 
 pub fn run() {
     tauri::Builder::default()
         .register_uri_scheme_protocol("esdsl", proto::handler)
-        .setup(|app| {
-            migrate_if_needed(app);
+        .setup(|_app| {
+            migrate_if_needed();
             Ok(())
         })
-        .run(tauri::generate_context!())
+        .run(app_context())
         .expect("error while running es-dsl-studio");
 }
 
@@ -148,13 +183,13 @@ pub fn run_eval(js: String) {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             probe_result,
-            capture_preview_start,
-            capture_preview_poll,
-            capture_preview_save
+            capture::capture_preview_start,
+            capture::capture_preview_poll,
+            capture::capture_preview_save
         ])
         .register_uri_scheme_protocol("esdsl", proto::handler)
         .setup(move |app| {
-            migrate_if_needed(app);
+            migrate_if_needed();
             if let Some(win) = app.get_webview_window("main") {
                 // esdsl:// 本地资源加载很快，稍等片刻再注入
                 std::thread::spawn(move || {
@@ -176,7 +211,7 @@ pub fn run_eval(js: String) {
             });
             Ok(())
         })
-        .run(tauri::generate_context!())
+        .run(app_context())
         .expect("error while running es-dsl-studio (eval mode)");
 }
 
@@ -185,11 +220,9 @@ pub fn selftest_main() -> i32 {
     selftest::run()
 }
 
-fn migrate_if_needed<R: tauri::Runtime, M: Manager<R>>(app: &M) {
-    // 便携场景：exe 同级/上级目录里遗留的 data/sources.json 首次导入
-    if let Ok(dir) = app.path().app_data_dir() {
-        if let Err(e) = store::Store::migrate_legacy(&dir) {
-            eprintln!("[esdsl] 迁移历史数据源失败：{e}");
-        }
+fn migrate_if_needed() {
+    // 便携/历史场景：exe 同级/上级目录或项目目录里遗留的 data/sources.json 首次导入
+    if let Err(e) = store::Store::migrate_legacy(&store::default_dir()) {
+        eprintln!("[esdsl] 迁移历史数据源失败：{e}");
     }
 }

@@ -4,7 +4,8 @@ version = "1.0.0"
 description = "ES DSL Studio - Elasticsearch DSL 查询工作台（桌面版）"
 authors = ["ES DSL Studio"]
 edition = "2021"
-rust-version = "1.77"
+# tauri 2.12 的 MSRV；三平台（Windows / macOS / Linux）统一用 stable 工具链
+rust-version = "1.90"
 
 [lib]
 name = "es_dsl_studio_lib"
@@ -18,9 +19,13 @@ path = "src/main.rs"
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "default-tls"] }
+# rustls-tls：纯 Rust TLS，三平台零系统依赖（Linux 不必装 libssl-dev）
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 percent-encoding = "2"
-# 调试桥截图用：WebView2 CapturePreview（PrintWindow 对 DirectComposition 窗口会拿到残帧）
+# 注意：webview2-com 和 windows 已从这里移除
+
+# 以下依赖仅在目标平台为 Windows 时才会被编译
+[target.'cfg(target_os = "windows")'.dependencies]
 webview2-com = "0.39"
 windows = { version = "0.62", features = ["Win32_System_Com", "Win32_Foundation"] }
 

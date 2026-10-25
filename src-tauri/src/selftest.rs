@@ -11,7 +11,7 @@ use crate::es;
 use crate::store::Store;
 
 pub fn run() -> i32 {
-    let dir = app_data_dir();
+    let dir = crate::store::default_dir();
     let store = Store::new(&dir);
     println!("== ES DSL Studio 自检 ==  数据目录：{}", dir.display());
 
@@ -106,20 +106,38 @@ pub fn run() -> i32 {
                     fail += 1;
                     println!("FAIL 非法索引名应返回 400，实际 {}", parts.status);
                 }
+
+                // 8. 文档查询（数据表格用，只读操作）
+                check!(
+                    format!("POST {label}/docs/{idx} (doc-query)"),
+                    call!("POST", &format!("/api/sources/{sid}/docs/{idx}"), json!({"size": 1}))
+                );
+
+                // 9. 非法文档 ID / 非法别名必须 400（路径段校验）
+                let bad = api::handle(&store, "DELETE", &format!("/api/sources/{sid}/docs/{idx}/a%2Fb"), "", &[]);
+                let (parts, _) = bad.into_parts();
+                if parts.status == 400 {
+                    pass += 1;
+                    println!("PASS 非法文档 ID 被拒绝（400）");
+                } else {
+                    fail += 1;
+                    println!("FAIL 非法文档 ID 应返回 400，实际 {}", parts.status);
+                }
+                let bad = api::handle(&store, "PUT", &format!("/api/sources/{sid}/indices/{idx}/aliases/BAD"), "", &[]);
+                let (parts, _) = bad.into_parts();
+                if parts.status == 400 {
+                    pass += 1;
+                    println!("PASS 非法别名被拒绝（400）");
+                } else {
+                    fail += 1;
+                    println!("FAIL 非法别名应返回 400，实际 {}", parts.status);
+                }
             }
         }
     }
 
     println!("\n===== 自检结果：{pass} 通过 / {fail} 失败 =====");
     if fail == 0 { 0 } else { 1 }
-}
-
-/// 与 Tauri 的 app_data_dir 计算保持一致：%APPDATA%\<identifier>
-fn app_data_dir() -> std::path::PathBuf {
-    let base = std::env::var("APPDATA")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::env::temp_dir());
-    base.join("com.esdsl.studio")
 }
 
 fn brief(v: &Value) -> String {

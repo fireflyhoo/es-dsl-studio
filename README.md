@@ -4,7 +4,7 @@
 
 ES 的查询 DSL 本质上是一棵树：组合查询是内部节点，词项/全文查询是叶子节点。ES DSL Studio 把这棵树直接画出来——从左侧元素库拖拽查询节点到画布、嵌套组合，右侧实时生成语法高亮的 DSL JSON，所见即所得。
 
-自带一个索引管理视图：像 MyCat 那样按「数据源 → 索引 → 字段」浏览多个 ES 集群的索引结构，并一键把字段同步到查询编辑器。生成的 DSL 也能直接对 ES 执行，结果以表格 / 聚合 / 原始 JSON 就地展示。
+自带一个索引管理视图：像 Navicat 那样按「数据源 → 索引 → 字段」浏览多个 ES 集群的索引结构，并一键把字段同步到查询编辑器。生成的 DSL 也能直接对 ES 执行，结果以表格 / 聚合 / 原始 JSON 就地展示。
 
 前端纯 HTML / CSS / 原生 JS，**零依赖、零构建**。后端有两种形态，任选其一：
 
@@ -19,7 +19,7 @@ ES 的查询 DSL 本质上是一棵树：组合查询是内部节点，词项/�
 
 ### 拖拽式查询树编辑
 
-- 左侧元素库收录 **56 种查询类型**，按 10 个分类着色分组，支持关键词搜索
+- 左侧元素库收录 **78 种节点**——56 种查询 + 22 种聚合，按 11 个分类着色分组，支持关键词搜索
 - 拖拽或点 `+` 添加节点；组合查询（bool 等）带彩色槽位，拖入即建立嵌套关系
 - 已有节点可拖动调整层级与顺序、复制、删除、一键「包一层 bool」
 - 往已有根查询上再拖一个查询，自动用 bool 组合
@@ -87,17 +87,18 @@ ES 的查询 DSL 本质上是一棵树：组合查询是内部节点，词项/�
 
 ![索引管理](docs/screenshot-index.png)
 
-- **多数据源**：可配置多个 ES 集群，树形展开「数据源 → 索引 → 字段」，和 MyCat 的库表浏览手感一致
+- **多数据源**：可配置多个 ES 集群，树形展开「数据源 → 索引 → 字段」，和 Navicat 的库表浏览手感一致
 - **索引概览**：文档数、存储大小、主/副本分片、字段数、别名，一次看清
-- **字段映射**：扁平化展示 `properties`，嵌套字段缩进、多字段（`title.keyword`）标注、`index: false` 与 `doc_values` 一目了然；支持按名称/类型搜索过滤
-- **设置 / 别名 / 数据 / 原始响应**：其余四个页签分别看 `settings`（关键词高亮）、别名列表、Navicat 风格的数据表格、未加工的完整 mapping JSON
+- **字段映射**：扁平化展示 `properties`，嵌套字段缩进、多字段（`title.keyword`）标注、`index: false` 与 `doc_values` 一目了然；支持按名称/类型搜索过滤；「编辑」按钮可批量添加 / 修改字段（保存到当前环境，并可生成同步到其他环境的 DSL），字段顺序记录在 mapping 的 `_meta.studioFieldOrder`，弹窗按创建顺序展示
+- **设置 / 别名 / 数据 / 原始响应**：其余四个页签分别看 `settings`（关键词高亮）、别名列表（可添加 / 移除别名）、Navicat 风格的数据表格、未加工的完整 mapping JSON
 - **数据表格（Navicat 风格）**：`_id` + `_source` 列平铺展示，支持
-  - **筛选**：字段 + 操作符（包含 / 等于 / 不等于 / 大于（等于）/ 小于（等于）/ 开头是 / 有值）组合条件，多条件可选 AND / OR，自动按字段类型生成 `term` / `range` / `wildcard` / `match_phrase` / `exists` 子句
+  - **筛选**：字段 + 操作符（包含 / 等于 / 不等于 / 大于 / 大于等于 / 小于 / 小于等于 / 开头是 / 有值）组合条件，多条件可选 AND / OR，自动按字段类型生成 `term` / `range` / `wildcard` / `match_phrase` / `exists` 子句
   - **排序**：点列头循环 升序 → 降序 → 取消，走 ES `sort`
   - **分页**：每页 10 / 20 / 50 / 100 条，上一页 / 下一页
   - **增删改**：勾选行（可全选）后批量删除；双击行或点行尾铅笔图标编辑（按 mapping 生成的表单，对象字段走 JSON 编辑）；「+ 添加记录」可指定 `_id` 或留空自动生成；写操作后自动 `_refresh`，新记录立即可见
   - 数据源设为只读时自动隐藏写入入口
 - **字段回填**：点「用字段构建查询」把当前索引的字段灌进查询编辑器；在顶栏选好数据源和索引也会自动带出字段
+- **体验细节**：筛选栏、操作符、逻辑关系、每页条数、布尔值均为自绘下拉（点击 / ↑↓+Enter / Esc 通用，打开时高亮当前项）；概览统计卡按指标着色、与查询构建同一套色板；空状态与加载态有统一反馈；数据写操作后自动 `_refresh`，新记录立即可见
 - **字段联想带类型**：`field` / `fields` / `path` 输入框聚焦即弹出自绘联想浮层，每条 = 字段名 + 彩色类型徽标（text / keyword / long / date …，与索引管理的字段映射同一套配色）；支持前缀与包含匹配（输入 `name` 也能联想 `author.name`）、↑↓ 选择、Enter 回填、悬停看完整字段名
 
 ![字段联想](docs/screenshot-fields.png)
@@ -108,11 +109,12 @@ ES 的查询 DSL 本质上是一棵树：组合查询是内部节点，词项/�
 
 ![索引概览](docs/screenshot-overview.png)
 
-## 支持的查询类型（ES 7.x / 8.x）
+## 支持的查询与聚合类型（ES 7.x / 8.x）
 
 | 分类 | 查询 |
 |------|------|
 | 组合查询 | bool、dis_max、constant_score、function_score、boosting |
+| 聚合统计 | agg_avg、agg_sum、agg_min、agg_max、agg_cardinality、agg_value_count、agg_stats、agg_extended_stats、agg_percentiles、agg_weighted_avg、agg_terms、agg_date_histogram、agg_histogram、agg_range、agg_date_range、agg_filters、agg_nested、agg_missing、agg_global、agg_filter、aggs（聚合容器）、raw（自定义聚合 JSON） |
 | 全文检索 | match、match_phrase、match_phrase_prefix、match_bool_prefix、multi_match、combined_fields、query_string、simple_query_string、intervals、match_all、match_none |
 | 词项查询 | term、terms、terms_set、range、exists、prefix、wildcard、regexp、fuzzy、ids |
 | 地理位置 | geo_distance、geo_bounding_box、geo_polygon、geo_shape |
@@ -120,33 +122,48 @@ ES 的查询 DSL 本质上是一棵树：组合查询是内部节点，词项/�
 | 向量检索 | knn（支持 filter 预过滤） |
 | Span 查询 | span_term、span_multi、span_first、span_near、span_or、span_not、span_containing、span_within |
 | 特殊查询 | script、script_score、more_like_this、percolate、rank_feature、distance_feature、pinned |
-| 评分函数 | weight、random_score、script_score、field_value_factor、decay（gauss / linear / exp） |
+| 评分函数 | fn_weight（weight）、fn_random_score（random_score）、fn_script_score（script_score）、fn_field_value_factor（field_value_factor）、fn_decay（gauss / linear / exp） |
 | 自定义 | raw JSON（任意 DSL 片段原样嵌入） |
 
 ## 快速开始
 
 ### 桌面应用（Tauri，不需要 Python）
 
+三平台（Windows / macOS / Linux）同一份代码，打包目标由 `tauri.conf.json` 的 `"targets": "all"` 按当前系统自动选择：
+
 ```bash
 npm install          # 安装 Tauri CLI（仅开发/构建时需要）
-npm run dev          # 开发模式：Rust 后端 + WebView2 窗口
-npm run build        # 打包：src-tauri/target/release 下产出 exe / nsis / msi 安装包
+npm run dev          # 开发模式：Rust 后端 + 系统 WebView 窗口
+npm run build        # 打包：按当前系统产出安装包
 ```
 
-桌面版把整个后端（静态托管 + ES 代理 + 数据源管理）编译进一个 exe，用户机器上**不需要 Python、不需要 Node**，只需 Windows 10/11 自带的 WebView2 运行时。前端通过自定义协议 `esdsl://` 与 Rust 通信，`fetch('/api/...')` 与浏览器版完全一致。数据源保存在 `%APPDATA%\com.esdsl.studio\sources.json`；首次启动会把旧版 `data/sources.json` 自动导入。
+| 平台 | 产物 | 用户机器前提 |
+|------|------|--------------|
+| Windows | `target/release/` 下 exe + NSIS / MSI 安装包 | Win10/11 自带 WebView2 运行时 |
+| macOS | `.app` + `.dmg` | 系统自带 WebKit，无额外依赖 |
+| Linux | `.deb` / `.rpm` / `.AppImage` | 系统 WebKitGTK（`webkit2gtk-4.1`） |
+
+构建前提：Rust stable ≥ 1.90（tauri 2.12 的 MSRV，三平台统一）、Node.js（仅装 Tauri CLI 用）。Linux 上另需 `libgtk-3-dev`、`libwebkit2gtk-4.1-dev`、`librsvg2-dev` 等 Tauri 系统依赖（见 [Tauri 官方文档](https://tauri.app/start/prerequisites/)）。Rust 侧用 rustls 做 TLS，**不需要** OpenSSL 开发包。
+
+桌面版把整个后端（静态托管 + ES 代理 + 数据源管理）编译进一个可执行文件，用户机器上**不需要 Python、不需要 Node**。前端通过自定义协议 `esdsl://` 与 Rust 通信，`fetch('/api/...')` 与浏览器版完全一致。
+
+**数据源配置统一放在用户主目录的 `~/.es-dsl-studio/sources.json`**（Windows 即 `%USERPROFILE%\.es-dsl-studio\sources.json`），桌面版与网页版共用同一位置；设 `ESDSL_HOME` 环境变量可改到别处（便携 / 多环境场景）。首次启动会把旧版项目目录 `data/sources.json` 自动导入。
 
 ![桌面版](docs/desktop-app.png)
 
 发布前可用自检模式验证 Rust 后端全链路（含真实 ES 访问，不弹窗口）：
 
 ```bash
-src-tauri/target/debug/es-dsl-studio.exe --selftest
+# Windows
+src-tauri\target\debug\es-dsl-studio.exe --selftest
+# macOS / Linux
+src-tauri/target/debug/es-dsl-studio --selftest
 ```
 
 调试桥（启动窗口后执行一段 JS，结果经 `probe_result` 回传后退出）：
 
 ```bash
-es-dsl-studio.exe --eval "setTimeout(() => __TAURI_INTERNALS__.invoke('probe_result', {payload: {mode: ESDC.getMode()}}), 4000)"
+es-dsl-studio --eval "setTimeout(() => __TAURI_INTERNALS__.invoke('probe_result', {payload: {mode: ESDC.getMode()}}), 4000)"
 ```
 
 ### 网页版（Python 后端）
@@ -166,8 +183,8 @@ python server.py
 
 | 模式 | 怎么进入 | 请求走向 | 凭据存放 |
 |------|----------|----------|----------|
-| **桌面应用**（推荐） | `npm run dev` 或安装包启动 | WebView → Rust 内嵌代理 → ES | `%APPDATA%\com.esdsl.studio\sources.json`，不下发前端 |
-| **服务端代理** | 通过 `python server.py` 访问 | 浏览器 → 本机 Python → ES | 服务端 `data/sources.json`，不下发浏览器 |
+| **桌面应用**（推荐） | `npm run dev` 或安装包启动 | WebView → Rust 内嵌代理 → ES | `~/.es-dsl-studio/sources.json`，不下发前端 |
+| **服务端代理** | 通过 `python server.py` 访问 | 浏览器 → 本机 Python → ES | `~/.es-dsl-studio/sources.json`，不下发浏览器 |
 | **浏览器直连** | 直接双击 `web/index.html` | 浏览器 → ES | 本机 localStorage，需要 ES 开 CORS |
 
 直连模式适合临时用一下；正式使用请走服务端代理，既绕开 CORS，也不把密码摊在浏览器里。
@@ -181,6 +198,7 @@ python server.py
 | `PORT` | `8080` | 监听端口；**设置该变量时会绑定 `0.0.0.0`**，否则只绑 `127.0.0.1` |
 | `ESDSL_TOKEN` | 空 | 设置后所有 `/api/*` 需要令牌，见下方「对外暴露」 |
 | `ESDSL_ES_TIMEOUT` | `15` | 单次 ES 请求超时（秒） |
+| `ESDSL_HOME` | `~/.es-dsl-studio` | 数据源配置目录（桌面版同样适用） |
 
 ```bash
 PORT=8080 ESDSL_TOKEN=my-secret python server.py
@@ -188,12 +206,12 @@ PORT=8080 ESDSL_TOKEN=my-secret python server.py
 
 ### 对外暴露（给同事试用）
 
-`data/sources.json` 里是**明文密码 / API Key**，所以默认只听 `127.0.0.1`。要让别人访问时务必：
+`~/.es-dsl-studio/sources.json` 里是**明文密码 / API Key**，所以默认只听 `127.0.0.1`。要让别人访问时务必：
 
 1. 设置 `ESDSL_TOKEN`，否则同网段任何人都能通过本服务读写你的 ES；
 2. 放在反向代理之后并加 HTTPS；
 3. 只读场景给数据源勾上「只读模式」；
-4. 不要把 `data/` 提交到版本库（`.gitignore` 已包含）。
+4. 不要把配置文件提交到版本库（默认就在用户主目录，不会误提交）。
 
 前端会在收到 401 时弹出令牌输入框，令牌存在浏览器 localStorage，通过 `X-ESDSL-Token` 头带上。
 
@@ -212,37 +230,49 @@ PORT=8080 ESDSL_TOKEN=my-secret python server.py
 | `GET /api/sources/{id}/indices` | 索引列表（`_cat/indices`，带 `_alias` 降级） |
 | `GET /api/sources/{id}/indices/{index}/detail` | mapping + settings + alias |
 | `GET /api/sources/{id}/indices/{index}/sample?size=10` | 抽样文档 |
+| `PUT /api/sources/{id}/indices/{index}` | 创建索引（body 为 settings + mappings；只读数据源返回 403） |
+| `PUT /api/sources/{id}/indices/{index}/mapping` | 更新字段映射、批量加字段（只读数据源返回 403） |
+| `PUT /api/sources/{id}/indices/{index}/aliases/{alias}` | 添加别名（只读数据源返回 403） |
+| `DELETE /api/sources/{id}/indices/{index}/aliases/{alias}` | 移除别名（只读数据源返回 403） |
+| `POST /api/sources/{id}/docs/{index}` | 数据表格查询：body 为 `{query, sort, size, from}`，转发到 `POST /{index}/_search`（带 `track_total_hits`） |
+| `PUT /api/sources/{id}/docs/{index}` | 新增文档：body 为 `{doc, id}`，`id` 留空则自动生成；写后自动 `_refresh` |
+| `PUT /api/sources/{id}/docs/{index}/{doc_id}` | 全量替换文档；写后自动 `_refresh` |
+| `DELETE /api/sources/{id}/docs/{index}/{doc_id}` | 删除文档；写后自动 `_refresh` |
 | `POST /api/sources/{id}/search` | 执行任意查询体：`{"index":"a,b","body":{...}}`，原样转发到 `POST /{index}/_search` |
 | `DELETE /api/sources/{id}/indices/{index}` | 删除索引（只读数据源返回 403） |
+
+以上接口在 Python 版（`server.py`）与桌面版（`src-tauri/src/api.rs`）中**逐条对齐**：文档 `_id` / 别名有字符集校验（非法返回 400），一切写操作先过只读模式检查（403），文档写成功后自动 `_refresh` 保证立即可见。
 
 ## 项目结构
 
 ```
-es-dsl-editor/
+es-dsl-studio/
 ├── web/                      # 纯前端（零构建，桌面版 frontendDist 指向它）
 │   ├── index.html            # 页面骨架（查询构建 / 索引管理两个视图）
 │   ├── css/
 │   │   └── styles.css        # 全部样式（浅色主题）
 │   └── js/
-│       ├── queries.js        # 核心：56 种查询类型定义 + 树↔DSL 双向转换 + 校验（纯逻辑，无 DOM）
+│       ├── queries.js        # 核心：78 种节点定义 + 树↔DSL 双向转换 + 校验（纯逻辑，无 DOM）
 │       ├── app.js            # UI：元素库 / 拖拽 / 查询树 / 属性面板 / JSON 预览 / 执行结果抽屉
-│       ├── es-client.js      # ES 通信层：服务端代理 / 浏览器直连双模式 + mapping 扁平化等纯函数
+│       ├── es-client.js      # ES 通信层：服务端代理 / 浏览器直连双模式 + mapping 扁平化、数据表格筛选等纯函数
 │       ├── col-picker.js     # 「选择列」浮层（偏好按索引记忆）
-│       └── index-browser.js  # 索引管理视图：数据源树 / 索引树 / 详情页签 / 删除确认
+│       └── index-browser.js  # 索引管理视图：数据源树 / 索引树 / 详情页签 / 数据表格 CRUD / 自绘下拉
 ├── src-tauri/                # 桌面版：Rust 后端（Tauri v2，无 Python 依赖）
 │   ├── src/
-│   │   ├── lib.rs            # 入口：注册 esdsl:// 协议 + 启动
+│   │   ├── lib.rs            # 入口：注册 esdsl:// 协议 + 启动 + 调试桥（截图命令仅 Windows，其余平台有同签名桩）
 │   │   ├── proto.rs          # 自定义协议：/api/* → API，其余 → 前端静态资源
-│   │   ├── api.rs            # /api 路由（与 server.py 对齐）
-│   │   ├── es.rs             # ES 代理（reqwest + Windows SChannel TLS）
-│   │   └── store.rs          # 数据源 CRUD + sources.json 原子持久化
-│   ├── tauri.conf.json       # 窗口 / 打包 / 协议配置
-│   └── icons/                # 应用图标
+│   │   ├── api.rs            # /api 路由（与 server.py 逐条对齐）
+│   │   ├── es.rs             # ES 代理（reqwest blocking + rustls TLS，跨平台零系统依赖）
+│   │   ├── store.rs          # 数据源 CRUD + sources.json 原子持久化（默认目录 ~/.es-dsl-studio）
+│   │   └── selftest.rs       # --selftest：不弹窗口跑 /api 全链路（含真实 ES 访问）
+│   ├── tauri.conf.json       # 窗口 / 打包 / 协议配置（targets: all，按系统自动选安装包格式）
+│   └── icons/                # 应用图标（ico / icns / png 三平台齐全）
 ├── server.py                 # Python 标准库后端（网页版用）：静态文件 + ES 反向代理 + 数据源管理
-├── data/                     # 运行时生成：sources.json（明文凭据，勿提交）
+├── data/                     # 旧版配置位置（已迁到 ~/.es-dsl-studio，仅首次启动导入用，勿提交）
 ├── test/
 │   ├── core.test.js          # 核心逻辑回归（24 项：生成 + 导入往返 + 校验）
-│   └── datasource.test.js    # 通信层与结果整形回归（78 项：mapping 扁平化、认证头、文档展平、聚合拍平…）
+│   ├── aggs.test.js          # 聚合结果整形回归（67 项：桶/指标拍平、子聚合路径）
+│   └── datasource.test.js    # 通信层与结果整形回归（147 项：mapping 扁平化、认证头、文档展平、筛选纯函数…）
 ├── docs/                     # README 截图
 ├── package.json              # 仅开发用：Tauri CLI + scripts（dev / build）
 └── README.md
@@ -250,12 +280,20 @@ es-dsl-editor/
 
 ## 开发与测试
 
-核心逻辑、通信层都刻意做成「无 DOM 的纯函数」，可在 Node 里直接跑：
+核心逻辑、通信层都刻意做成「无 DOM 的纯函数」，可在 Node 里直接跑（共 238 项断言）：
 
 ```bash
 node test/core.test.js
+node test/aggs.test.js
 node test/datasource.test.js
 python -m py_compile server.py
+```
+
+桌面版 Rust 后端与 `server.py` 的 `/api` 路由逐条对齐，**改一边务必同步另一边**。三平台发布前各自验证：
+
+```bash
+cargo check                                    # 需要 Rust stable ≥ 1.90（tauri 2.12 MSRV）
+src-tauri/target/debug/es-dsl-studio --selftest   # 全链路自检（含真实 ES 访问；Windows 上是 .exe）
 ```
 
 ### 新增一种查询类型

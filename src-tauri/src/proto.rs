@@ -8,10 +8,9 @@
 use std::borrow::Cow;
 
 use tauri::http::{Request, Response, StatusCode};
-use tauri::Manager;
 
 use crate::api;
-use crate::store::Store;
+use crate::store::{self, Store};
 
 pub fn handler<R: tauri::Runtime>(
     ctx: tauri::UriSchemeContext<'_, R>,
@@ -25,12 +24,7 @@ pub fn handler<R: tauri::Runtime>(
         if req.method().as_str() == "OPTIONS" {
             return api::handle(&empty_store(), "OPTIONS", &path, &query, &[]);
         }
-        let dir = ctx
-            .app_handle()
-            .path()
-            .app_data_dir()
-            .unwrap_or_else(|_| std::env::temp_dir().join("es-dsl-studio"));
-        return api::handle(&Store::new(dir), req.method().as_str(), &path, &query, req.body());
+        return api::handle(&Store::new(store::default_dir()), req.method().as_str(), &path, &query, req.body());
     }
 
     // 目录访问归一到 index.html；前导 "/" 去掉后交给 asset resolver
