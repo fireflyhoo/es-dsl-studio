@@ -96,8 +96,10 @@ jobs:
       - name: 安装前端依赖（仅 Tauri CLI）
         run: npm ci
 
+      # bundle.targets: ["all"] 已在 tauri.conf.json 配置，按平台自动产出全部安装包
+      # （注意：--bundles 的合法值随平台而异，且不接受 "all"，不要传）
       - name: 构建 ${{ matrix.target }}
-        run: npx tauri build --target ${{ matrix.target }} --bundles all
+        run: npx tauri build --target ${{ matrix.target }}
 
       - name: 上传产物到 Release
         uses: softprops/action-gh-release@v2
