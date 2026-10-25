@@ -2414,6 +2414,57 @@
 
   window.ESStudio = { setActiveIndex, switchView };
 
+  /* ---------------- 版本更新检查 ---------------- */
+  // 请求与版本比较都在服务端做：浏览器端走 server.py、桌面端走 api.rs（esdsl://
+  // 自定义协议的同一套 /api/* 路由），同名同构。前端 fetch 相对路径即可，
+  // 不需要直连 api.github.com，也就没有跨域 / 限流问题。
+  const RELEASES_URL = 'https://github.com/fireflyhoo/es-dsl-studio/releases';
+  const UPDATE_CACHE_KEY = 'esdsl.update.v1';
+
+  function applyUpdate(hasUpdate, latest) {
+    const el = $('#update-indicator');
+    if (!el) return;
+    if (hasUpdate && latest) {
+      el.classList.add('show');
+      const tip = '发现新版本 ' + latest + '，点击前往下载';
+      el.title = tip;
+      el.setAttribute('aria-label', tip);
+    } else {
+      el.classList.remove('show');
+    }
+  }
+  async function checkUpdate() {
+    const el = $('#update-indicator');
+    if (!el) return;
+    el.addEventListener('click', (e) => {
+      e.preventDefault();
+      window.open(RELEASES_URL, '_blank', 'noopener');
+    });
+    const now = Date.now();
+    let cached = null;
+    try { cached = JSON.parse(localStorage.getItem(UPDATE_CACHE_KEY) || 'null'); } catch (e) { cached = null; }
+    if (cached) {
+      const age = now - (cached.checkedAt || 0);
+      if (cached.latest && age < 24 * 3600 * 1000) { applyUpdate(cached.hasUpdate, cached.latest); return; }
+      if (!cached.latest && age < 3600 * 1000) return; // 失败 / 暂未发布，1h 内不再打扰
+    }
+    let latest = null, hasUpdate = false;
+    try {
+      const res = await fetch('/api/update-check', { cache: 'no-store' });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.ok) {
+          latest = data.latest || null;
+          hasUpdate = !!data.hasUpdate && !!latest;
+        }
+      }
+    } catch (e) { /* 网络异常 / 服务端未实现该路由，静默忽略 */ }
+    try {
+      localStorage.setItem(UPDATE_CACHE_KEY, JSON.stringify({ checkedAt: now, latest, hasUpdate }));
+    } catch (e) { /* 隐私模式忽略 */ }
+    applyUpdate(hasUpdate, latest);
+  }
+
   /* ---------------- 启动 ---------------- */
   function init() {
     renderPalette();
@@ -2425,6 +2476,7 @@
     }
     renderAll();
     primeRunBar();
+    checkUpdate(); // 异步检查新版本，失败静默，不阻塞 UI
     // 支持 #index 深链；延后一拍等 index-browser.js 注册完成
     if (location.hash === '#index') setTimeout(() => switchView('index'), 0);
   }
