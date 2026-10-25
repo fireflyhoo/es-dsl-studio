@@ -85,6 +85,8 @@
     plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
     search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>',
     reset: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>',
+    alert: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>',
+    cols: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16M15 4v16"/></svg>',
   };
 
   /* ---------------- 类型着色（分组表在 es-client.js，索引管理与字段联想共用） ---------------- */
@@ -369,7 +371,7 @@
     const emptyEl = $('#idx-empty');
     const contentEl = $('#idx-content');
     if (!emptyEl || !contentEl) return;
-    dselClose(); // 详情整体重绘，筛选栏下拉浮层先收起（DOM 重建后旧浮层会失效）
+    DSEL.close(); // 详情整体重绘，筛选栏下拉浮层先收起（DOM 重建后旧浮层会失效）
 
     const sel = state.active;
     if (!sel) {
@@ -531,7 +533,7 @@
     bar.appendChild(sel);
     bar.appendChild(copyBtn);
     bar.appendChild(batchBtn);
-    upgradeDataSelects(bar); // 原生 select → 自绘下拉
+    DSEL.upgrade(bar); // 原生 select → 自绘下拉
     box.appendChild(bar);
 
     const list = filterFields(data.fields, state.fieldFilter, state.fieldType);
@@ -666,54 +668,9 @@
     return { text: text, full: text, empty: false };
   }
 
-  /* ---------------- 数据 tab 渲染 ---------------- */
-  function renderData(rec, sel, data, meta) {
-    const box = h('div', 'tab-pane data-pane');
-    const view = docsViewOf(sel.sid, sel.index);
-    const readonlySrc = !!(srcOf(sel.sid) || {}).readonly;
-
-    if (!rec || rec.err) {
-      box.appendChild(h('div', 'detail-loading bad', (rec && rec.err) || '查询失败'));
-      const retry = h('button', 'btn sm', '重试');
-      retry.dataset.act = 'docs-refresh';
-      box.appendChild(retry);
-      return box;
-    }
-
-    const resp = rec.data || {};
-    const hitsWrap = resp.hits || {};
-    const hits = hitsWrap.hits || [];
-    const total = typeof hitsWrap.total === 'object' ? (hitsWrap.total || {}).value : hitsWrap.total;
-
-    box.appendChild(renderDataToolbar(view, data, sel, hits, readonlySrc));
-
-    if (!hits.length) {
-      const empty = h('div', 'data-empty');
-      const condActive = view.conds.some((c) => c.field && (c.op === 'exists' || String(c.value || '').trim() !== ''));
-      empty.innerHTML = condActive
-        ? '<b>没有符合条件的记录</b><div>调整筛选条件后重试，或点「重置」清空条件</div>'
-        : '<b>该索引暂无文档</b><div>点右上角「+ 添加记录」写入第一条数据</div>';
-      box.appendChild(empty);
-      return box;
-    }
-
-    const cols = collectDataCols(data, hits);
-    const selCount = Object.keys(view.sel).length;
-    const pageFrom = view.from + 1;
-    const pageTo = view.from + hits.length;
-
-    // 状态行
-    const status = h('div', 'data-status');
-    status.innerHTML =
-      '<span>命中 <b>' + formatCount(total) + '</b> 条</span>' +
-      '<span class="dim">·</span><span>第 ' + pageFrom + ' - ' + pageTo + ' 条</span>' +
-      (view.sort ? '<span class="dim">·</span><span>排序 <span class="mono">' + esc(view.sort.field) + '</span> ' + (view.sort.order === 'asc' ? '↑' : '↓') + '</span>' : '') +
-      '<span class="data-sel-count"' + (selCount ? '' : ' hidden') + '>已选 ' + selCount + ' 条</span>' +
-      '<span style="flex:1"></span>' +
-      (readonlySrc ? '<span class="data-ro" title="该数据源为只读模式">只读</span>' : '');
-    box.appendChild(status);
-
-    // 表格
+  /* 数据表格构建：首次渲染与「选择列」勾选后局部重建共用。
+     cols 为最终展示列（已按索引偏好过滤），view 提供排序/勾选状态。 */
+  function buildDataTable(view, hits, cols) {
     const table = h('table', 'fields-table data-table');
     const headCells = ['<th class="data-cell-check"><input type="checkbox" data-act="docs-check-all"' + (view.checkedAll ? ' checked' : '') + ' title="全选 / 取消本页"></th>',
       '<th class="data-cell-id">_id</th>'];
@@ -750,7 +707,77 @@
       tbody.appendChild(tr);
     });
     table.appendChild(tbody);
-    box.appendChild(table);
+    return table;
+  }
+
+  /* ---------------- 数据 tab 渲染 ---------------- */
+  function renderData(rec, sel, data, meta) {
+    const box = h('div', 'tab-pane data-pane');
+    const view = docsViewOf(sel.sid, sel.index);
+    const readonlySrc = !!(srcOf(sel.sid) || {}).readonly;
+
+    if (!rec || rec.err) {
+      // 查询失败（多为筛选条件非法，如 ES 400）：仍渲染完整工具栏，
+      // 让用户能看到并修改 / 清除条件，否则只能对着错误反复重试
+      const errBox = h('div', 'data-query-err');
+      errBox.innerHTML =
+        '<div class="dq-msg">' + ICON.alert + '<span>' + esc((rec && rec.err) || '查询失败') + '</span></div>' +
+        '<div class="dq-tip">可修改下方筛选条件后重新查询，或一键清空条件</div>';
+      const acts = h('div', 'dq-acts');
+      const retry = h('button', 'btn sm', ICON.refresh + '重试');
+      retry.dataset.act = 'docs-refresh';
+      retry.title = '用当前条件重新执行查询';
+      acts.appendChild(retry);
+      const clearRetry = h('button', 'btn sm primary', ICON.reset + '清空条件并重试');
+      clearRetry.dataset.act = 'docs-clear-retry';
+      clearRetry.title = '清空所有筛选条件与排序后重新查询';
+      acts.appendChild(clearRetry);
+      errBox.appendChild(acts);
+      box.appendChild(errBox);
+      box.appendChild(renderDataToolbar(view, data, sel, [], readonlySrc));
+      return box;
+    }
+
+    const resp = rec.data || {};
+    const hitsWrap = resp.hits || {};
+    const hits = hitsWrap.hits || [];
+    const total = typeof hitsWrap.total === 'object' ? (hitsWrap.total || {}).value : hitsWrap.total;
+
+    box.appendChild(renderDataToolbar(view, data, sel, hits, readonlySrc));
+
+    if (!hits.length) {
+      const empty = h('div', 'data-empty');
+      const condActive = view.conds.some((c) => c.field && (c.op === 'exists' || String(c.value || '').trim() !== ''));
+      empty.innerHTML = condActive
+        ? '<b>没有符合条件的记录</b><div>调整筛选条件后重试，或点「重置」清空条件</div>'
+        : '<b>该索引暂无文档</b><div>点右上角「+ 添加记录」写入第一条数据</div>';
+      box.appendChild(empty);
+      return box;
+    }
+
+    const allCols = collectDataCols(data, hits);
+    // 展示列：按索引记忆的列偏好（ESCols），无偏好时默认前 14 列
+    const cols = window.ESCols ? ESCols.visible(allCols, sel.index).cols : allCols;
+    const selCount = Object.keys(view.sel).length;
+    const pageFrom = view.from + 1;
+    const pageTo = view.from + hits.length;
+
+    // 状态行
+    const status = h('div', 'data-status');
+    status.innerHTML =
+      '<span>命中 <b>' + formatCount(total) + '</b> 条</span>' +
+      '<span class="dim">·</span><span>第 ' + pageFrom + ' - ' + pageTo + ' 条</span>' +
+      (view.sort ? '<span class="dim">·</span><span>排序 <span class="mono">' + esc(view.sort.field) + '</span> ' + (view.sort.order === 'asc' ? '↑' : '↓') + '</span>' : '') +
+      '<span class="data-sel-count"' + (selCount ? '' : ' hidden') + '>已选 ' + selCount + ' 条</span>' +
+      '<span style="flex:1"></span>' +
+      (readonlySrc ? '<span class="data-ro" title="该数据源为只读模式">只读</span>' : '');
+    box.appendChild(status);
+
+    // 表格（包一层容器：「选择列」勾选后只重建表格本身，工具栏与浮层锚点不被替换）
+    const tableWrap = h('div', 'data-table-wrap');
+    tableWrap.id = 'docs-table-wrap';
+    tableWrap.appendChild(buildDataTable(view, hits, cols));
+    box.appendChild(tableWrap);
 
     // 分页
     const pages = Math.max(1, Math.ceil((total || 0) / view.size));
@@ -771,175 +798,16 @@
     return box;
   }
 
-  /* ---------------- 筛选栏自绘下拉（替代原生 select 弹层） ----------------
-     原生 select 仍留在 DOM 里（视觉隐藏）当数据载体，所有既有 change 事件链路不变；
-     触发器按钮 + fs-pop 浮层负责展示与交互，选中后同步回隐藏 select 并派发 change。
-     renderDetail 会重建工具栏 DOM，浮层跟随失效，故每次重绘工具栏先关旧浮层再升级新 select。 */
-  const DSEL_SELECTOR = 'select.data-cond-field, select.data-cond-op, select.data-logic, select.data-size, select#fld-type, select.doc-bool';
-  let dselPop = null; // { pop, wrap, sel, btn, items }
-
-  function dselItems(sel) {
-    return Array.prototype.map.call(sel.options, (o) => ({
-      value: o.value,
-      label: o.textContent,
-      sel: o.selected,
-      type: o.dataset.type || '',
-    }));
-  }
-
-  function dselClose() {
-    if (!dselPop) return;
-    dselPop.pop.remove();
-    dselPop.wrap.classList.remove('open');
-    window.removeEventListener('scroll', dselPosition, true);
-    window.removeEventListener('resize', dselPosition);
-    document.removeEventListener('mousedown', dselOutside, true);
-    document.removeEventListener('keydown', dselKey, true);
-    dselPop = null;
-  }
-
-  function dselOutside(e) {
-    if (!dselPop) return;
-    if (dselPop.pop.contains(e.target)) return;
-    if (dselPop.wrap.contains(e.target)) return;
-    dselClose();
-  }
-
-  function dselPosition() {
-    if (!dselPop) return;
-    const r = dselPop.btn.getBoundingClientRect();
-    const w = Math.max(r.width, 132);
-    dselPop.pop.style.width = w + 'px';
-    const h = dselPop.pop.offsetHeight || 220;
-    let top = r.bottom + 5;
-    if (top + h > window.innerHeight - 8) top = Math.max(8, r.top - h - 5);
-    dselPop.pop.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 8 - w)) + 'px';
-    dselPop.pop.style.top = top + 'px';
-  }
-
-  function dselRender() {
-    if (!dselPop) return;
-    dselPop.items = dselItems(dselPop.sel);
-    if (!dselPop.items.length) {
-      dselPop.pop.innerHTML = '<div class="fs-empty">没有可选项</div>';
-      dselPosition();
-      return;
-    }
-    dselPop.pop.innerHTML = dselPop.items.map((it, i) =>
-      '<button type="button" class="fs-item dsel-item' + (it.sel ? ' on' : '') + '" data-i="' + i + '" title="' + esc(it.label) + '">' +
-      '<span class="dsel-check' + (it.sel ? ' on' : '') + '"></span>' +
-      '<span class="fs-path' + (it.value === '' ? ' dim' : '') + '">' + esc(it.label) + '</span>' +
-      (it.type ? typeBadge(it.type) : '') +
-      '</button>').join('');
-    dselPosition();
-  }
-
-  function dselPick(i) {
-    if (!dselPop || !dselPop.items[i]) return;
-    const it = dselPop.items[i];
-    const sel = dselPop.sel;
-    if (sel.value === it.value) { dselClose(); return; }
-    sel.value = it.value;
-    // 先同步触发器文案再收起（dselClose 后 dselPop 引用即失效）
-    const o = sel.options[sel.selectedIndex];
-    const label = o ? o.textContent : '';
-    dselPop.btn.querySelector('.dsel-val').textContent = label;
-    dselPop.btn.classList.toggle('is-empty', !sel.value);
-    dselPop.btn.title = label;
-    dselClose();
-    // 走既有 change 链路（改条件 / 改每页条数 / 改逻辑关系都会触发重绘或重查）
-    sel.dispatchEvent(new Event('change', { bubbles: true }));
-  }
-
-  function dselMoveActive(delta) {
-    if (!dselPop) return;
-    const items = dselPop.pop.querySelectorAll('.fs-item');
-    const n = items.length;
-    if (!n) return;
-    let idx = -1;
-    items.forEach((node, i) => { if (node.classList.contains('kbon')) idx = i; });
-    dselHighlight(delta > 0 ? (idx + 1) % n : (idx - 1 + n) % n);
-  }
-
-  function dselKey(e) {
-    if (!dselPop) return;
-    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-      e.preventDefault();
-      dselMoveActive(e.key === 'ArrowDown' ? 1 : -1);
-    } else if (e.key === 'Enter') {
-      e.preventDefault();
-      const cur = dselPop.pop.querySelector('.fs-item.kbon');
-      if (cur) dselPick(Number(cur.dataset.i));
-    } else if (e.key === 'Escape') {
-      e.stopPropagation();
-      dselClose();
-    }
-  }
-
-  function dselHighlight(i) {
-    if (!dselPop) return;
-    const items = dselPop.pop.querySelectorAll('.fs-item');
-    items.forEach((node, idx) => node.classList.toggle('kbon', idx === i));
-    if (items[i]) items[i].scrollIntoView({ block: 'nearest' });
-  }
-
-  function dselOpen(wrap) {
-    const sel = wrap.querySelector('select');
-    const btn = wrap.querySelector('.dsel-btn');
-    if (!sel || !btn) return;
-    if (dselPop && dselPop.wrap === wrap) { dselClose(); return; }
-    dselClose();
-    const pop = h('div', 'fs-pop dsel-pop');
-    pop.addEventListener('mousedown', (e) => {
-      e.preventDefault(); // 抢在 blur / 重绘之前，点选稳定生效
-      const item = e.target.closest('.fs-item');
-      if (item) dselPick(Number(item.dataset.i));
-    });
-    document.body.appendChild(pop);
-    dselPop = { pop: pop, wrap: wrap, sel: sel, btn: btn, items: [] };
-    wrap.classList.add('open');
-    window.addEventListener('scroll', dselPosition, true);
-    window.addEventListener('resize', dselPosition);
-    document.addEventListener('mousedown', dselOutside, true);
-    document.addEventListener('keydown', dselKey, true);
-    dselRender();
-    // 默认高亮当前选中项（无选中则第一项）
-    const selIdx = dselPop.items.findIndex((it) => it.sel);
-    dselHighlight(selIdx >= 0 ? selIdx : 0);
-  }
-
-  // 把容器里的目标 select 升级为自绘下拉（幂等：已包 .dsel 的跳过）
-  function upgradeDataSelects(root) {
-    (root || document).querySelectorAll(DSEL_SELECTOR).forEach((sel) => {
-      if (sel.parentElement && sel.parentElement.classList.contains('dsel')) return;
-      const kind = sel.id === 'fld-type' ? 'type' :
-        (sel.classList.contains('data-cond-field') ? 'field' :
-          (sel.classList.contains('data-cond-op') ? 'op' :
-            (sel.classList.contains('data-logic') ? 'logic' :
-              (sel.classList.contains('doc-bool') ? 'bool' : 'size'))));
-      const wrap = document.createElement('span');
-      wrap.className = 'dsel';
-      wrap.dataset.kind = kind;
-      sel.parentNode.insertBefore(wrap, sel);
-      wrap.appendChild(sel);
-      const btn = h('button', 'dsel-btn');
-      btn.type = 'button';
-      btn.innerHTML = '<span class="dsel-val"></span>' + ICON.chevron;
-      btn.addEventListener('click', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        dselOpen(wrap);
-      });
-      wrap.appendChild(btn);
-      const o = sel.options[sel.selectedIndex];
-      btn.querySelector('.dsel-val').textContent = o ? o.textContent : '';
-      btn.classList.toggle('is-empty', !sel.value);
-      btn.title = o ? o.textContent : '';
-    });
-  }
+  /* ---------------- 自绘下拉（共享模块 window.ESDSEL，见 js/dsel.js） ----------------
+     原生 select 视觉隐藏留作数据载体，触发器按钮 + fs-pop 浮层负责交互；
+     选中后同步回 select 并派发 change，既有 change 事件链路不变。
+     renderDetail 会重建 DOM，浮层跟随失效，故每次重绘先 close 再 upgrade。 */
+  const DSEL = window.ESDSEL;
+  DSEL.setBadgeRenderer(typeBadge); // 字段下拉浮层的选项带类型徽标
 
   function renderDataToolbar(view, data, sel, hits, readonlySrc) {
-    dselClose(); // 工具栏将重建，先收掉可能开着的浮层
+    DSEL.close(); // 工具栏将重建，先收掉可能开着的浮层
+    if (window.ESCols) ESCols.close(); // 列选择浮层同理（锚点按钮将被替换）
     const bar = h('div', 'data-toolbar');
 
     // 筛选条件区
@@ -1008,6 +876,12 @@
 
     // 右侧动作区
     const acts = h('div', 'data-acts');
+    // 「选择列」：与查询结果抽屉共用 ESCols，偏好按索引名记忆（同一键空间）
+    const colsBtn = h('button', 'btn sm', ICON.cols + '选择列');
+    colsBtn.id = 'docs-cols';
+    colsBtn.title = '选择表格展示哪些列（按索引记忆）';
+    acts.appendChild(colsBtn);
+
     const refresh = h('button', 'btn sm', ICON.refresh + '刷新');
     refresh.dataset.act = 'docs-refresh';
     refresh.title = '重新执行当前查询';
@@ -1039,8 +913,46 @@
       acts.appendChild(delBtn);
     }
     bar.appendChild(acts);
-    upgradeDataSelects(bar); // 原生 select → 自绘下拉
+    DSEL.upgrade(bar); // 原生 select → 自绘下拉
+
+    // 列选择器：列集合与当前展示列在打开时求值；勾选实时写偏好并局部重建表格
+    const allCols = collectDataCols(data, hits);
+    if (window.ESCols && allCols.length) {
+      ESCols.badge(colsBtn, '选择列', ESCols.visible(allCols, sel.index).cols.length, allCols.length);
+      ESCols.attach(colsBtn, {
+        getAll: () => collectDataCols(data, hits),
+        getSel: () => ESCols.visible(collectDataCols(data, hits), sel.index).cols,
+        onApply: (picked) => {
+          ESCols.setPref(sel.index, picked);
+          rebuildDataTable(sel, view, data, hits);
+        },
+        onReset: () => {
+          ESCols.setPref(sel.index, null);
+          rebuildDataTable(sel, view, data, hits);
+        }
+      });
+    } else if (colsBtn) {
+      colsBtn.hidden = true; // 没有任何列可挑（无 mapping 无数据）时隐藏
+    }
     return bar;
+  }
+
+  /* 列选择后局部重建表格：不重绘工具栏，避免列选择浮层的锚点按钮被替换
+     （浮层挂在 body 上，锚点失效会导致定位跳位）。空结果/错误态没有表格，
+     关闭浮层后整体重绘即可。 */
+  function rebuildDataTable(sel, view, data, hits) {
+    const wrap = document.querySelector('#docs-table-wrap');
+    if (!wrap) {
+      if (window.ESCols) ESCols.close();
+      renderDetail();
+      return;
+    }
+    const allCols = collectDataCols(data, hits);
+    const cols = window.ESCols ? ESCols.visible(allCols, sel.index).cols : allCols;
+    wrap.innerHTML = '';
+    wrap.appendChild(buildDataTable(view, hits, cols));
+    const btn = document.querySelector('#docs-cols');
+    if (btn && window.ESCols) ESCols.badge(btn, '选择列', cols.length, allCols.length);
   }
 
   // 勾选状态变化后局部刷新（不重绘整表，保持滚动位置与输入焦点）
@@ -1109,6 +1021,7 @@
     $('#ds-name').value = src ? src.name : '';
     $('#ds-url').value = src ? src.url : 'http://localhost:9200';
     $('#ds-auth').value = (src && src.authType) || 'none';
+    DSEL.sync($('#ds-auth')); // 回填后同步自绘触发器文案
     $('#ds-user').value = (src && src.username) || '';
     $('#ds-pass').value = '';
     $('#ds-apikey').value = '';
@@ -1431,6 +1344,7 @@
     sel.innerHTML = state.sources.map((s) =>
       '<option value="' + esc(s.id) + '"' + (s.id === prefer.id ? ' selected' : '') + '>' +
       esc(s.name + ' · ' + hostOf(s.url)) + '</option>').join('');
+    DSEL.sync(sel); // options 重建后同步自绘触发器
     $('#ix-name').value = '';
     $('#ix-shards').value = '1';
     $('#ix-replicas').value = '1';
@@ -1690,6 +1604,7 @@
     const rowsWrap = h('div', 'be-rows');
     state.batch.rows.forEach((row) => rowsWrap.appendChild(renderNewRow(row)));
     sec2.appendChild(rowsWrap);
+    DSEL.upgrade(rowsWrap); // 原生 select → 自绘下拉
     box.appendChild(sec2);
 
     // ---- 底部操作 ----
@@ -1933,7 +1848,7 @@
   }
 
   function openDocModal(mode, doc) {
-    dselClose(); // 弹窗将重建表单，先收掉可能开着的浮层
+    DSEL.close(); // 弹窗将重建表单，先收掉可能开着的浮层
     const sel = state.active;
     if (!sel) return;
     const key = sel.sid + '|' + sel.index;
@@ -1973,7 +1888,7 @@
       pane.appendChild(docFieldRow(f, source[f.path]));
     }
     // 布尔字段下拉升级为自绘下拉（与筛选栏 / 字段映射页同款）
-    upgradeDataSelects(pane);
+    DSEL.upgrade(pane);
 
     // JSON 模式：整体文档
     $('#doc-json').value = JSON.stringify(mode === 'edit' ? source : {}, null, 2);
@@ -2068,7 +1983,7 @@
   }
 
   function closeDocModal() {
-    dselClose(); // 收掉可能开着的下拉浮层
+    DSEL.close(); // 收掉可能开着的下拉浮层
     $('#doc-mask').classList.remove('show');
     docModal = null;
   }
@@ -2348,6 +2263,18 @@
           delete state.docs[state.active.sid + '|' + state.active.index];
           loadDocs(state.active.sid, state.active.index);
           renderDetail();
+          return;
+        }
+        if (act === 'docs-clear-retry' && state.active) {
+          // 查询失败态的一键恢复：清空全部筛选条件与排序后重查
+          const v = docsViewOf(state.active.sid, state.active.index);
+          v.conds = [{ field: '', op: 'contains', value: '' }];
+          v.logic = 'must';
+          v.sort = null;
+          v.from = 0;
+          v.sel = {};
+          v.checkedAll = false;
+          loadDocs(state.active.sid, state.active.index, true);
           return;
         }
         if (act === 'docs-query' && state.active) {

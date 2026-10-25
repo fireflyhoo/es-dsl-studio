@@ -192,10 +192,11 @@
     return box;
   }
 
-  // 更新触发按钮上的计数徽标：btn 文本 = 基础文案 + 已选/总数
+  // 更新触发按钮上的计数徽标：btn 文本 = 基础文案 + 已选/总数（保留按钮自带图标）
   function badge(btn, base, selN, allN) {
     if (!btn) return;
-    btn.innerHTML = esc(base) + (allN > 0 ? ' <b>' + selN + '/' + allN + '</b>' : '');
+    const icon = btn.querySelector('svg');
+    btn.innerHTML = (icon ? icon.outerHTML : '') + esc(base) + (allN > 0 ? ' <b>' + selN + '/' + allN + '</b>' : '');
   }
 
   window.ESCols = {

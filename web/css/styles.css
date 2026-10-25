@@ -113,6 +113,18 @@ body {
   box-shadow: 0 2px 4px rgba(220, 38, 38, 0.32), 0 8px 20px rgba(220, 38, 38, 0.26);
 }
 #btn-run:focus-visible { outline-color: #b91c1c; }
+/* 新增数据源：indigo 渐变，与 teal「索引」按钮、红色运行键三方区分 */
+#btn-add-ds {
+  background: linear-gradient(135deg, #4f46e5, #6366f1);
+  border-color: transparent; color: #fff;
+  box-shadow: 0 1px 2px rgba(79, 70, 229, 0.28), 0 4px 12px rgba(79, 70, 229, 0.16);
+}
+#btn-add-ds:hover {
+  background: linear-gradient(135deg, #4338ca, #4f46e5);
+  color: #fff;
+  box-shadow: 0 2px 4px rgba(79, 70, 229, 0.32), 0 8px 20px rgba(79, 70, 229, 0.26);
+}
+#btn-add-ds:focus-visible { outline-color: #4338ca; }
 .btn.danger:hover {
   border-color: var(--danger); color: var(--danger);
   background: rgba(220, 38, 38, 0.06);
@@ -193,17 +205,63 @@ body {
   width: 14px; height: 14px; color: var(--faint);
 }
 #palette-list { flex: 1; overflow-y: auto; padding: 6px 10px 16px; }
+/* 元素库整体抽屉：收起后左列收缩为 46px 窄轨，标题竖排，底部留展开按钮 */
+#main { transition: grid-template-columns 0.22s ease; }
+#main.palette-collapsed { grid-template-columns: 46px minmax(0, 1fr) 460px; }
+#palette.collapsed .search,
+#palette.collapsed #palette-list { display: none; }
+#palette.collapsed .panel-h {
+  flex: 1;
+  flex-direction: column;
+  padding: 12px 4px;
+  border-bottom: none;
+}
+#palette.collapsed .panel-h .sub,
+#palette.collapsed #btn-cats-toggle { display: none; }
+#palette.collapsed .panel-h .tt {
+  writing-mode: vertical-rl;
+  letter-spacing: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  padding: 6px 0;
+}
+#palette.collapsed .panel-h .sec-toggle { margin: 0 auto; }
+/* 收起态整条窄轨都是热区：点哪都能展开，悬浮给一点强调色暗示 */
+#palette.collapsed { cursor: pointer; transition: border-color 0.15s ease, background 0.15s ease; }
+#palette.collapsed:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 4%, #fff); }
+#palette .panel-h .spacer { flex: 1; }
 
 .pcat { margin-top: 10px; }
 .pcat-h {
   display: flex; align-items: center; gap: 7px;
   font-size: 12px; font-weight: 600; color: var(--muted);
   padding: 4px 4px 6px;
-  cursor: default;
+  cursor: pointer;
   user-select: none;
+  border-radius: 6px;
 }
+.pcat-h:hover { color: var(--text); background: var(--bg); }
 .pcat-h .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--c); flex-shrink: 0; }
 .pcat-h .cnt { margin-left: auto; font-weight: 400; color: var(--faint); font-size: 11px; }
+/* 分组抽屉箭头：展开朝下、收起朝右 */
+.pcat-h .caret {
+  width: 0; height: 0; flex-shrink: 0;
+  border-left: 5px solid var(--faint);
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  transform: rotate(90deg);
+  transition: transform 0.18s ease;
+}
+.pcat.collapsed .pcat-h .caret { transform: rotate(0deg); }
+/* 抽屉动画：max-height 过渡，兼容性最稳；折叠时不可交互、不可拖 */
+.pcat-items {
+  overflow: hidden;
+  max-height: 2400px;
+  opacity: 1;
+  transition: max-height 0.24s ease, opacity 0.18s ease;
+}
+.pcat.collapsed .pcat-items { max-height: 0; opacity: 0; pointer-events: none; }
 
 .pitem {
   display: flex; align-items: center; gap: 8px;
@@ -1426,11 +1484,20 @@ body.view-index #index-app { display: block; flex: 1; min-height: 0; padding: 12
 /* 记录弹窗里的布尔下拉：填满输入列，与 .doc-input 视觉对齐 */
 .dsel[data-kind="bool"] { flex: 1 1 0%; min-width: 0; }
 .doc-field .dsel-btn { padding: 6px 10px; }
+/* 查询构建器参数下拉：填满 .ctl 行（与 ✕ 并排），指标对齐 .field input/select */
+.dsel[data-kind="param"] { flex: 1 1 0%; min-width: 0; }
+.dsel[data-kind="param"] .dsel-btn { padding: 7px 10px; font-size: 13px; border-radius: 7px; }
+/* 表单通栏下拉（数据源弹窗认证方式 / 新建索引弹窗数据源）：块级通栏，指标对齐表单 select */
+.dsel[data-kind="form"] { display: flex; width: 100%; margin-top: 5px; }
+.dsel[data-kind="form"] .dsel-btn { padding: 7px 10px; font-size: 13px; border-radius: 7px; }
+/* DSL 工具栏 total_hits：小尺寸，指标对齐 #json-toolbar .set select */
+.dsel[data-kind="tth"] { flex: 0 0 auto; }
+.dsel[data-kind="tth"] .dsel-btn { padding: 4px 6px; font-size: 12px; border-radius: 6px; line-height: 17px; }
 .dsel-btn {
   display: inline-flex; align-items: center; gap: 6px;
   width: 100%; min-width: 0;
   border: 1px solid var(--border-strong); border-radius: 7px; background: #fff;
-  padding: 5px 8px; font: 12.5px var(--sans); color: var(--text);
+  padding: 5px 8px; font: 12.5px var(--sans); line-height: 1.2; color: var(--text);
   cursor: pointer; text-align: left;
   transition: border-color 0.12s ease, box-shadow 0.12s ease, transform 0.1s ease;
 }
@@ -1466,7 +1533,7 @@ body.view-index #index-app { display: block; flex: 1; min-height: 0; padding: 12
 .data-table .data-cell-check { width: 30px; text-align: center; }
 .data-table .data-cell-check input { accent-color: var(--accent); cursor: pointer; vertical-align: middle; }
 .data-table .data-cell-id { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11.5px; }
-.data-table .data-cell-ops { white-space: nowrap; text-align: right; }
+.data-table .data-cell-ops { display: flex; align-items: center; justify-content: flex-end; gap: 4px; white-space: nowrap; }
 .data-table .data-cell-ops .icon-btn { padding: 3px 5px; }
 .data-col-head { cursor: pointer; user-select: none; white-space: nowrap; }
 .data-col-head:hover { color: var(--accent); }
@@ -1480,6 +1547,22 @@ body.view-index #index-app { display: block; flex: 1; min-height: 0; padding: 12
 /* 空态 */
 .data-empty { padding: 42px 16px; text-align: center; color: var(--faint); font-size: 13px; line-height: 1.9; }
 .data-empty b { display: block; color: var(--muted); font-size: 14px; margin-bottom: 2px; }
+
+/* 数据查询失败（多为筛选条件非法）：错误块 + 完整工具栏，保证用户能改条件 */
+.data-query-err {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 14px 16px; margin-bottom: 10px;
+  border: 1px solid #fecaca; border-radius: var(--radius);
+  background: #fef2f2;
+}
+.data-query-err .dq-msg {
+  display: flex; align-items: flex-start; gap: 8px;
+  color: var(--danger); font-size: 12.5px; line-height: 1.6; font-weight: 600;
+  word-break: break-all;
+}
+.data-query-err .dq-msg svg { width: 15px; height: 15px; flex-shrink: 0; margin-top: 1px; }
+.data-query-err .dq-tip { color: #b91c1c; font-size: 11.5px; opacity: 0.85; }
+.data-query-err .dq-acts { display: flex; gap: 8px; }
 
 /* 分页 */
 .data-pager { display: flex; gap: 10px; align-items: center; justify-content: flex-end; margin-top: 10px; }
@@ -1634,6 +1717,10 @@ body.view-index #index-app { display: block; flex: 1; min-height: 0; padding: 12
 }
 .mask .m-h .x { margin-left: auto; }
 .mask .m-b { padding: 14px 18px; }
+/* 弹窗拖动：标题栏抓手 + 拖动中全局光标 */
+#modal .m-h, .mask .m-h { cursor: grab; }
+#modal .m-h .x, .mask .m-h .x, .mask .m-h button { cursor: pointer; }
+body.modal-dragging, body.modal-dragging * { cursor: grabbing !important; user-select: none; }
 .mask .m-f {
   padding: 12px 18px;
   border-top: 1px solid var(--border);
@@ -1643,21 +1730,23 @@ body.view-index #index-app { display: block; flex: 1; min-height: 0; padding: 12
 }
 
 /* 只作用于「标签 + 输入框」的常规字段，避免污染复选框行（.chk） */
-#ds-form > label, #ix-form, #alias-form > label,
-#ds-form .form-grid > label, #ix-form, #alias-form .form-grid > label {
+#ds-form > label, #ix-form > label, #alias-form > label,
+#ds-form .form-grid > label, #ix-form .form-grid > label, #alias-form .form-grid > label {
   display: block; font-size: 12px; font-weight: 600; color: var(--text);
   margin-bottom: 11px;
 }
-#ds-form label .req, #ix-form, #alias-form label .req { color: var(--danger); }
+#ds-form label .req, #ix-form label .req, #alias-form label .req { color: var(--danger); }
 #ds-form input:not([type="checkbox"]), #ds-form select,
-#ix-form, #alias-form input:not([type="checkbox"]), #ix-form, #alias-form select {
+#ix-form input:not([type="checkbox"]), #ix-form select,
+#alias-form input:not([type="checkbox"]), #alias-form select {
   width: 100%; margin-top: 5px;
   border: 1px solid var(--border-strong); border-radius: 7px;
   padding: 7px 10px; font: 13px var(--sans);
   outline: none; background: #fff; color: var(--text);
 }
 #ds-form input:not([type="checkbox"]):focus, #ds-form select:focus,
-#ix-form, #alias-form input:not([type="checkbox"]):focus, #ix-form, #alias-form select:focus {
+#ix-form input:not([type="checkbox"]):focus, #ix-form select:focus,
+#alias-form input:not([type="checkbox"]):focus, #alias-form select:focus {
   border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
 }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
@@ -1666,19 +1755,19 @@ body.view-index #index-app { display: block; flex: 1; min-height: 0; padding: 12
   gap: 9px; margin: 2px 0 10px;
 }
 /* 复选框行：必须覆盖上面的块级 label 规则 */
-#ds-form .chk, #ix-form, #alias-form .chk {
+#ds-form .chk, #ix-form .chk, #alias-form .chk {
   display: inline-flex; align-items: center; gap: 7px;
   font-size: 12.5px; font-weight: 500; color: var(--muted);
   margin: 0; line-height: 18px; cursor: pointer; user-select: none;
   white-space: normal;
 }
-#ds-form .chk input[type="checkbox"], #ix-form, #alias-form .chk input[type="checkbox"] {
+#ds-form .chk input[type="checkbox"], #ix-form .chk input[type="checkbox"], #alias-form .chk input[type="checkbox"] {
   width: 15px; height: 15px; margin: 0; padding: 0;
   flex: 0 0 auto; border-radius: 3px;
   accent-color: var(--accent); cursor: pointer;
 }
-#ds-form .chk span, #ix-form, #alias-form .chk span { line-height: 18px; }
-#ds-form .chk:hover, #ix-form, #alias-form .chk:hover { color: var(--text); }
+#ds-form .chk span, #ix-form .chk span, #alias-form .chk span { line-height: 18px; }
+#ds-form .chk:hover, #ix-form .chk:hover, #alias-form .chk:hover { color: var(--text); }
 .form-note { font-size: 11.5px; color: var(--faint); line-height: 1.65; }
 .form-note code { font-family: var(--mono); background: #f1f5f9; padding: 1px 4px; border-radius: 4px; }
 
@@ -1731,6 +1820,8 @@ body.view-index #index-app { display: block; flex: 1; min-height: 0; padding: 12
   margin: 0 12px 12px; display: flex; flex-direction: column; overflow: hidden;
 }
 #result-drawer .panel-h { gap: 8px; flex-wrap: wrap; }
+/* 头部 spacer 撑开：动作按钮组与关闭按钮贴右，✕ 落在最右端 */
+#result-drawer .panel-h .spacer { flex: 1; }
 .rs-fld {
   display: inline-flex; align-items: center; gap: 5px;
   font-size: 12px; color: var(--muted); font-weight: 500;
@@ -1926,6 +2017,8 @@ body.view-index #result-drawer, body.view-index #rs-resizer { display: none; }
 }
 .be-input:focus { border-color: var(--accent); }
 .be-row-main .icon-btn { flex-shrink: 0; }
+/* 新增字段行的类型自绘下拉：与同行 .be-input Padding/圆角对齐 */
+.be-row-main .dsel-btn { padding: 6px 9px; border-radius: var(--btn-radius); }
 .be-row-err {
   padding: 0 10px 8px;
   font-size: 11.5px; color: var(--danger);

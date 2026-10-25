@@ -241,7 +241,13 @@ def es_request(src, path, method="GET", body=None):
             j = json.loads(raw)
             err = j.get("error") if isinstance(j, dict) else None
             if isinstance(err, dict):
-                detail = err.get("reason") or err.get("type") or ""
+                # ES 7+ 的 4xx：error.reason 常是无信息量的 "all shards failed"，
+                # 真正原因在 error.root_cause[0].reason
+                rc = err.get("root_cause")
+                if isinstance(rc, list) and rc and isinstance(rc[0], dict) and rc[0].get("reason"):
+                    detail = rc[0]["reason"]
+                else:
+                    detail = err.get("reason") or err.get("type") or ""
             elif isinstance(err, str):
                 detail = err
         except ValueError:

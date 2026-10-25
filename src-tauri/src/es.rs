@@ -147,8 +147,14 @@ fn parse_error_detail(raw: &str) -> String {
     if let Ok(j) = serde_json::from_str::<Value>(raw) {
         if let Some(err) = j.get("error") {
             if let Some(o) = err.as_object() {
+                // ES 7+ 的 4xx 响应：error.reason 常是无信息量的 "all shards failed"，
+                // 真正原因在 error.root_cause[0].reason（如 "No mapping found for [x] in order to sort on"）
                 let d = o
-                    .get("reason")
+                    .get("root_cause")
+                    .and_then(|v| v.as_array())
+                    .and_then(|a| a.first())
+                    .and_then(|rc| rc.get("reason"))
+                    .or_else(|| o.get("reason"))
                     .or_else(|| o.get("type"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("");

@@ -432,8 +432,18 @@
 
     if (!res.ok) {
       const errObj = data && data.error;
-      const msg = (errObj && (errObj.reason || errObj.type)) || res.statusText || ('HTTP ' + res.status);
-      throw ESError('Elasticsearch 返回 ' + res.status + '：' + msg, 'http', res.status, data);
+      // ES 7+ 的 4xx 响应：error.reason 常是无信息量的 "all shards failed"，
+      // 真正原因在 error.root_cause[0].reason（如 "No mapping found for [x] in order to sort on"）
+      let msg = null;
+      if (errObj && typeof errObj === 'object') {
+        const rc = errObj.root_cause;
+        if (Array.isArray(rc) && rc.length && rc[0] && rc[0].reason) msg = rc[0].reason;
+        if (!msg && errObj.reason) msg = errObj.reason;
+        if (!msg && errObj.type) msg = errObj.type;
+      } else if (typeof errObj === 'string') {
+        msg = errObj;
+      }
+      throw ESError('Elasticsearch 返回 ' + res.status + '：' + (msg || res.statusText || ('HTTP ' + res.status)), 'http', res.status, data);
     }
     return data;
   }

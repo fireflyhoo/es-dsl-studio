@@ -7,6 +7,7 @@
   const { CATS, CATMAP, DEFS, mkNode, gen, importNode, importAggs, validate, isEmpty } = window.ESQ;
   // 结果整形复用 es-client.js 的纯函数（那边有单元测试）
   const { flattenDoc, aggRows, aggMetricList, cellText } = window.ESDC;
+  const DSEL = window.ESDSEL; // 自绘下拉（与索引管理视图共用同一套机制）
 
   /* ---------------- 状态 ---------------- */
   let root = null;        // 查询树根
@@ -131,10 +132,18 @@
     if (cat === 'fn' || cat === 'agg') return false;
     return true;
   }
-  function slotRejectMsg(type) {
+  // listKids 容器的合成槽位：必须保留 DEFS.listKids 上的约束（如 aggs 列表 accept:'agg'），
+  // 否则硬编码 { key:'list', multi:true } 会丢掉 accept，导致聚合节点拖不进聚合列表
+  function listSlotOf(parent) {
+    return Object.assign({}, DEFS[parent.type].listKids, { key: 'list', multi: true });
+  }
+  function slotRejectMsg(type, slot) {
     const cat = DEFS[type].cat;
     if (cat === 'fn') return '评分函数请拖到 function_score 的 functions 槽位';
-    return '聚合节点请拖到画布下方「聚合统计」区，或桶聚合的子聚合槽位';
+    if (cat === 'agg') return '聚合节点请拖到画布下方「聚合统计」区，或桶聚合的子聚合槽位';
+    if (slot && slot.accept === 'agg') return '这里只能放聚合节点，查询请放到上方查询区';
+    if (slot && slot.accept === 'fn') return '这里只能放评分函数';
+    return '该节点不能放在这个位置';
   }
 
   // 向父节点容器添加子节点（key: 槽位 key 或 'list'；index 可选）
@@ -148,7 +157,7 @@
     const slot = (d.slots || []).find((s) => s.key === key);
     if (!slot) return false;
     if (!slotAccepts(slot, child.type)) {
-      toast(slotRejectMsg(child.type));
+      toast(slotRejectMsg(child.type, slot));
       return false;
     }
     const arr = parent.kids[key];
@@ -208,7 +217,7 @@
   // 找容器节点中第一个能容纳该类型的槽位
   function firstSlotFor(parent, type) {
     const d = DEFS[parent.type];
-    if (d.listKids) return { key: 'list', multi: true };
+    if (d.listKids) return listSlotOf(parent);
     return (d.slots || []).find((s) => slotAccepts(s, type) && (s.multi || !(parent.kids[s.key] || []).length)) || null;
   }
 
@@ -254,7 +263,7 @@
     if (zone.kind === 'slot') {
       parent = (findAny(zone.pid) || {}).node;
       if (!parent) return;
-      slot = zone.key === 'list' ? { key: 'list', multi: true }
+      slot = zone.key === 'list' ? listSlotOf(parent)
         : Object.assign({}, (DEFS[parent.type].slots || []).find((s) => s.key === zone.key) || {});
       slot.key = zone.key;
     } else if (zone.kind === 'before') {
@@ -269,7 +278,7 @@
       } else if (loc.parent) {
         // 叶子：插到它前面
         parent = loc.parent;
-        slot = loc.key === 'list' ? { key: 'list', multi: true }
+        slot = loc.key === 'list' ? listSlotOf(loc.parent)
           : Object.assign({}, DEFS[loc.parent.type].slots.find((s) => s.key === loc.key) || {});
         slot.key = loc.key;
         insertIdx = loc.index;
@@ -277,12 +286,15 @@
       // loc 为根且不是容器 -> 走 root 逻辑（包 bool）
     }
 
+    // 「聚合统计」容器只能有一个且必须在聚合区根部，不能拖进任何槽位
+    if (nodeType === 'aggs' && parent) { toast('聚合区只能有一个，直接往里拖聚合节点即可'); return; }
+
     if (slot && !slotAccepts(slot, nodeType)) {
-      toast(slotRejectMsg(nodeType));
+      toast(slotRejectMsg(nodeType, slot));
       return;
     }
     if (isAgg && !(slot && slot.accept === 'agg')) {
-      toast(slotRejectMsg(nodeType));
+      toast(slotRejectMsg(nodeType, slot));
       return;
     }
 
@@ -345,6 +357,12 @@
       return;
     }
     if (d.cat === 'agg') {
+      // 聚合节点：自动展开聚合统计区，保证落点可见
+      const sec = $('#aggs-sec');
+      if (sec && sec.classList.contains('collapsed')) {
+        sec.classList.remove('collapsed');
+        $('#btn-aggs-toggle').title = '收起聚合统计区';
+      }
       // 聚合容器：没有就建，有了就选中
       if (type === 'aggs') {
         const c = ensureAggsRoot();
@@ -375,13 +393,15 @@
         const slot = sd.slots.find((s) => slotAccepts(s, type) && (s.multi || !(sel.kids[s.key] || []).length));
         if (slot) { insertChild(sel, slot.key, n); selectedId = n.id; renderAll(); return; }
       } else if (sd.listKids) {
+        const slot = listSlotOf(sel);
+        if (!slotAccepts(slot, type)) { toast(slotRejectMsg(type, slot)); return; }
         sel.kids.push(n); selectedId = n.id; renderAll(); return;
       }
       // 叶子节点：作为同级插到它后面
       const loc = findAny(sel.id);
       if (loc && loc.parent) {
-        const slot = loc.key === 'list' ? { multi: true } : DEFS[loc.parent.type].slots.find((s) => s.key === loc.key);
-        if (slot.multi && slotAccepts(slot, type)) {
+        const slot = loc.key === 'list' ? listSlotOf(loc.parent) : DEFS[loc.parent.type].slots.find((s) => s.key === loc.key);
+        if (slot && slot.multi && slotAccepts(slot, type)) {
           kidsArrayOf(loc).splice(loc.index + 1, 0, n);
           selectedId = n.id; renderAll(); return;
         }
@@ -401,7 +421,9 @@
     return mkNode('bool');
   }
 
-  /* ---------------- 元素库渲染 ---------------- */
+  /* ---------------- 元素库渲染 ----------------
+     分组（pcat）可收缩：items 包在 .pcat-items 里，靠 max-height 过渡做抽屉动画；
+     搜索时忽略收起状态（自动展开命中分组），避免「搜到了却看不见」。 */
   function renderPalette() {
     paletteEl.innerHTML = '';
     const kw = paletteFilter.trim().toLowerCase();
@@ -409,23 +431,39 @@
       const items = Object.values(DEFS).filter((d) => d.cat === cat.id && (!kw ||
         d.type.toLowerCase().includes(kw) || d.cn.toLowerCase().includes(kw) || (d.desc || '').toLowerCase().includes(kw)));
       if (!items.length) continue;
-      const box = el('div', 'pcat');
+      const collapsed = !kw && !!collapsedCats[cat.id];
+      const box = el('div', 'pcat' + (collapsed ? ' collapsed' : ''));
       box.style.setProperty('--c', cat.color);
-      const h = el('div', 'pcat-h', `<span class="dot"></span>${esc(cat.label)}<span class="cnt">${items.length}</span>`);
+      box.dataset.cat = cat.id;
+      const h = el('div', 'pcat-h',
+        `<span class="caret"></span><span class="dot"></span>${esc(cat.label)}<span class="cnt">${items.length}</span>`);
       box.appendChild(h);
-      if (!collapsedCats[cat.id]) {
-        for (const d of items) {
-          const it = el('div', 'pitem');
-          it.style.setProperty('--c', cat.color);
-          it.draggable = true;
-          it.dataset.type = d.type;
-          it.title = d.desc || '';
-          it.innerHTML = `<span class="t">${esc(d.type)}</span><span class="cn">${esc(d.cn)}</span><button class="add" title="点击添加">+</button>`;
-          box.appendChild(it);
-        }
+      const body = el('div', 'pcat-items');
+      for (const d of items) {
+        const it = el('div', 'pitem');
+        it.style.setProperty('--c', cat.color);
+        it.draggable = true;
+        it.dataset.type = d.type;
+        it.title = d.desc || '';
+        it.innerHTML = `<span class="t">${esc(d.type)}</span><span class="cn">${esc(d.cn)}</span><button class="add" title="点击添加">+</button>`;
+        body.appendChild(it);
       }
+      box.appendChild(body);
       paletteEl.appendChild(box);
     }
+    syncCatsToggle();
+  }
+
+  /* 分组一键展开/收起：全收起时按钮变为「展开所有」；搜索中恒为「收起所有」，
+     状态会记下，清空搜索后生效（搜索时命中分组强制展开，避免搜到却看不见） */
+  const ICON_CHEVS_UP = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 20 5-5 5 5"/><path d="m7 12 5-5 5 5"/></svg>';
+  const ICON_CHEVS_DOWN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 6 5 5 5-5"/><path d="m7 13 5 5 5-5"/></svg>';
+  function syncCatsToggle() {
+    const btn = $('#btn-cats-toggle');
+    if (!btn) return;
+    const allCollapsed = !paletteFilter.trim() && CATS.every((c) => collapsedCats[c.id]);
+    btn.title = allCollapsed ? '展开所有分类' : '收起所有分类';
+    btn.innerHTML = allCollapsed ? ICON_CHEVS_DOWN : ICON_CHEVS_UP;
   }
 
   /* ---------------- 查询树渲染 ---------------- */
@@ -577,7 +615,7 @@
     const fieldLike = (f.k === 'field' || f.k === 'fields' || f.k === 'path');
     let input;
     if (f.kind === 'select') {
-      input = `<select id="f_${f.k}"><option value="">（默认）</option>` +
+      input = `<select id="f_${f.k}" class="qp-select"><option value="">（默认）</option>` +
         f.opts.map((o) => `<option ${v === o ? 'selected' : ''}>${esc(o)}</option>`).join('') + '</select>';
     } else if (f.kind === 'textarea' || f.kind === 'json') {
       wrap.classList.add('wide');
@@ -594,7 +632,7 @@
     // 字段类输入框挂自绘联想浮层（能带出类型徽标，datalist 做不到）
     if (fieldLike && inp && inp.tagName === 'INPUT') attachFieldSuggest(inp);
     // 下拉框的 ✕ 不能覆盖原生箭头，改用并排布局
-    if (f.kind === 'select') ctl.classList.add('ctl-sel');
+    if (f.kind === 'select') { ctl.classList.add('ctl-sel'); DSEL.upgrade(wrap); }
     // 有值时才显示清空按钮
     const syncClear = () => { ctl.classList.toggle('has', String(inp.value) !== ''); };
     wrap.querySelector('.ctl-x').addEventListener('click', () => {
@@ -602,6 +640,7 @@
       node.params[f.k] = '';
       inp.classList.remove('bad-json');
       syncClear();
+      if (f.kind === 'select') DSEL.sync(inp); // 一键清空后同步自绘触发器
       onParamChange(node);
       inp.focus();
     });
@@ -856,6 +895,7 @@
     $('#set-size').value = settings.size;
     $('#set-from').value = settings.from;
     $('#set-tth').value = settings.track_total_hits;
+    DSEL.sync($('#set-tth')); // 回填后同步自绘触发器
     $('#set-minscore').value = settings.min_score;
   }
 
@@ -901,6 +941,14 @@
       e.dataTransfer.setData('text/plain', 'type:' + it.dataset.type);
       e.dataTransfer.effectAllowed = 'copy';
       it.classList.add('dragging');
+      // 拖聚合节点时自动展开聚合统计区，保证落点可见
+      if ((DEFS[it.dataset.type] || {}).cat === 'agg') {
+        const sec = $('#aggs-sec');
+        if (sec && sec.classList.contains('collapsed')) {
+          sec.classList.remove('collapsed');
+          $('#btn-aggs-toggle').title = '收起聚合统计区';
+        }
+      }
     });
     paletteEl.addEventListener('dragend', (e) => {
       const it = e.target.closest('.pitem');
@@ -912,10 +960,14 @@
       const it = e.target.closest('.pitem');
       if (add && it) quickAdd(it.dataset.type);
       else if (e.target.closest('.pcat-h')) {
+        // 分组抽屉：点击表头展开/收起（搜索中不切换，保持命中分组可见）
+        if (paletteFilter.trim()) return;
         const box = e.target.closest('.pcat');
-        const label = box.querySelector('.pcat-h').textContent;
-        const cat = CATS.find((c) => label.startsWith(c.label));
-        if (cat) { collapsedCats[cat.id] = !collapsedCats[cat.id]; renderPalette(); }
+        const cat = CATS.find((c) => c.id === box.dataset.cat);
+        if (cat) {
+          collapsedCats[cat.id] = !collapsedCats[cat.id];
+          box.classList.toggle('collapsed', !!collapsedCats[cat.id]);
+        }
       } else if (it) {
         quickAdd(it.dataset.type);
       }
@@ -1097,12 +1149,37 @@
     $('#btn-insp-toggle').addEventListener('click', () => {
       setInspCollapsed(!inspPanel.classList.contains('collapsed'));
     });
+    setInspCollapsed(true); // 节点属性面板默认收起（双击节点或点开关展开）
 
     // 聚合统计区折叠：只藏聚合树，标题栏与「新建聚合区」仍在
     const aggsSec = $('#aggs-sec');
     $('#btn-aggs-toggle').addEventListener('click', () => {
       const collapsed = aggsSec.classList.toggle('collapsed');
       $('#btn-aggs-toggle').title = collapsed ? '展开聚合统计区' : '收起聚合统计区';
+    });
+
+    // 查询元素库整体抽屉：收起后左列收缩为 46px 窄轨（标题竖排），只留展开按钮
+    const palettePanel = $('#palette');
+    function setPaletteCollapsed(collapsed) {
+      palettePanel.classList.toggle('collapsed', collapsed);
+      $('#main').classList.toggle('palette-collapsed', collapsed);
+      $('#btn-palette-toggle').title = collapsed ? '展开元素库' : '收起元素库';
+    }
+    $('#btn-palette-toggle').addEventListener('click', () => {
+      setPaletteCollapsed(!palettePanel.classList.contains('collapsed'));
+    });
+    // 收起态下整条窄轨都是热区，点哪都能展开（点展开按钮自身则交给上面的处理器）
+    palettePanel.addEventListener('click', (e) => {
+      if (!palettePanel.classList.contains('collapsed')) return;
+      if (e.target.closest('#btn-palette-toggle')) return;
+      setPaletteCollapsed(false);
+    });
+
+    // 分组一键展开/收起
+    $('#btn-cats-toggle').addEventListener('click', () => {
+      const collapse = !(!paletteFilter.trim() && CATS.every((c) => collapsedCats[c.id]));
+      for (const c of CATS) collapsedCats[c.id] = collapse;
+      renderPalette();
     });
 
     // 查询结果抽屉
@@ -1210,12 +1287,13 @@
         triggerRun();
         return;
       }
-      const tag = (e.target.tagName || '').toLowerCase();
-      if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+      // 弹窗显示时 Esc 一律关闭（焦点在输入框 / textarea 内也生效，与其余 7 个弹窗一致）
       if ($('#modal-mask').classList.contains('show')) {
-        if (e.key === 'Escape') closeImport();
+        if (e.key === 'Escape') { e.preventDefault(); closeImport(); }
         return;
       }
+      const tag = (e.target.tagName || '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
       if (e.key === 'Delete' || e.key === 'Backspace') {
         if (selectedId) { deleteNode(selectedId); e.preventDefault(); }
       } else if (e.key === 'Escape') {
