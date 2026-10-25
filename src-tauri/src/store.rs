@@ -5,7 +5,7 @@
 //!   - upsert 时密钥留空表示沿用原值
 //!   - 原子写入（tmp + rename）
 //!
-//! 桌面版 data_dir = app_data_dir（%APPDATA%\com.esdsl.studio）；
+//! 默认 data_dir = 用户主目录/.es-dsl-studio（与 server.py 相同，ESDSL_HOME 可覆盖）；
 //! selftest 模式可直接传任意目录，不依赖 Tauri Runtime。
 
 use serde_json::{json, Value};
@@ -15,6 +15,26 @@ use std::path::{Path, PathBuf};
 use crate::es;
 
 pub const SECRET_FIELDS: [&str; 3] = ["password", "apiKey", "token"];
+
+/// 配置目录：ESDSL_HOME 环境变量优先，否则 用户主目录/.es-dsl-studio。
+/// 与 server.py 的 DATA_DIR 规则保持一致（Windows 读 USERPROFILE，类 Unix 读 HOME）。
+pub fn default_dir() -> PathBuf {
+    if let Some(v) = std::env::var_os("ESDSL_HOME") {
+        if !v.is_empty() {
+            return PathBuf::from(v);
+        }
+    }
+    let home = if cfg!(windows) {
+        std::env::var_os("USERPROFILE")
+    } else {
+        std::env::var_os("HOME")
+    };
+    match home {
+        Some(h) if !h.is_empty() => Path::new(&h).join(".es-dsl-studio"),
+        // 极端情况拿不到主目录：退回临时目录，保证不 panic
+        _ => std::env::temp_dir().join(".es-dsl-studio"),
+    }
+}
 
 pub struct Store {
     dir: PathBuf,

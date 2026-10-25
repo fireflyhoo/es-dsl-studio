@@ -18,7 +18,8 @@ ES DSL Studio - 服务端
   - 默认只监听 127.0.0.1。设置了 PORT 环境变量（云/容器）时监听 0.0.0.0。
   - 一旦对外监听，强烈建议同时设置 ESDSL_TOKEN，否则任何能访问该端口的人都能
     用你配置的 ES 凭据读写集群。
-  - 数据源保存在 data/sources.json，含明文凭据，请勿提交到代码仓库。
+  - 数据源保存在 ~/.es-dsl-studio/sources.json（ESDSL_HOME 可覆盖），
+    含明文凭据，请勿提交到代码仓库。
 """
 
 import base64
@@ -38,8 +39,13 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(BASE_DIR, "data")
+# 配置统一放用户主目录：~/.es-dsl-studio/sources.json
+# （与桌面版 store.rs 的 default_dir 保持一致；ESDSL_HOME 可覆盖，便于便携/多环境）
+DATA_DIR = os.environ.get("ESDSL_HOME") or os.path.join(os.path.expanduser("~"), ".es-dsl-studio")
+DATA_DIR = os.path.abspath(os.path.expanduser(DATA_DIR))
 SOURCES_FILE = os.path.join(DATA_DIR, "sources.json")
+# 便携版历史位置：项目目录下的 data/sources.json，首次启动时导入到 DATA_DIR
+LEGACY_SOURCES_FILE = os.path.join(BASE_DIR, "data", "sources.json")
 # 纯前端资源统一放在 web/ 下（桌面版 frontendDist 也指向它）；
 # 兼容旧布局：web/ 不存在时退回项目根。
 STATIC_DIR = os.path.join(BASE_DIR, "web") if os.path.isdir(os.path.join(BASE_DIR, "web")) else BASE_DIR
@@ -81,6 +87,25 @@ class ApiError(Exception):
 # --------------------------------------------------------------------------
 def _ensure_data_dir():
     os.makedirs(DATA_DIR, exist_ok=True)
+    _migrate_legacy()
+
+
+def _migrate_legacy():
+    """首次启动把项目目录 data/sources.json 导入 ~/.es-dsl-studio/（只做一次）。"""
+    if os.path.exists(SOURCES_FILE) or not os.path.exists(LEGACY_SOURCES_FILE):
+        return
+    try:
+        with open(LEGACY_SOURCES_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, list):
+            return
+        tmp = SOURCES_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, SOURCES_FILE)
+        print("[esdsl] 已把历史数据源从 {} 导入到 {}".format(LEGACY_SOURCES_FILE, SOURCES_FILE), file=sys.stderr)
+    except (OSError, ValueError):
+        pass
 
 
 def load_sources():
