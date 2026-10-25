@@ -804,6 +804,32 @@ body {
 #query-actions { display: flex; gap: 8px; }
 body.view-index #query-actions { display: none; }
 
+/* 版本更新提示（右上角，默认隐藏，有新版才显示） */
+.up-ind {
+  display: none;
+  position: relative;
+  width: 34px; height: 34px;
+  align-items: center; justify-content: center;
+  margin-left: 2px;
+  border-radius: 9px;
+  color: var(--accent);
+  background: var(--accent-soft, #eef2ff);
+  border: 1px solid transparent;
+  text-decoration: none;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s ease, transform 0.1s ease;
+}
+.up-ind.show { display: inline-flex; }
+.up-ind:hover { background: #e0e7ff; transform: translateY(-1px); }
+.up-ind svg { width: 18px; height: 18px; }
+.up-ind .up-dot {
+  position: absolute; top: 3px; right: 3px;
+  width: 8px; height: 8px; border-radius: 50%;
+  background: #ef4444; border: 2px solid var(--panel, #fff);
+}
+.up-ind:hover .up-dot { border-color: #e0e7ff; }
+
 /* 顶栏运行目标：数据源 + 索引（紧跟视图切换器，组合成一组分段控件） */
 #run-bar {
   display: flex; align-items: center; gap: 4px;

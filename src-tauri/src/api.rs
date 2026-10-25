@@ -2,6 +2,7 @@
 //!
 //! 路径来自 esdsl:// 自定义协议，形态：
 //!   GET    /api/health
+//!   GET    /api/update-check               版本更新检查（后端代理 GitHub API）
 //!   GET    /api/sources                    列表（剥离凭据）
 //!   POST   /api/sources                    新增/更新
 //!   DELETE /api/sources/<sid>              删除
@@ -22,7 +23,10 @@
 //!   DELETE /api/sources/<sid>/docs/<i>/<d>  删除文档
 
 use std::borrow::Cow;
+use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
+use reqwest::blocking::Client;
 use serde_json::{json, Value};
 use tauri::http::{Response, StatusCode};
 
@@ -76,6 +80,16 @@ fn route(store: &Store, method: &str, path: &str, query: &str, body: &[u8]) -> R
             "authRequired": false,
             "version": VERSION,
         }));
+    }
+
+    // /api/update-check —— 版本更新检查。
+    // 与 server.py 的 /api/update-check 同构：由后端代理 GitHub API，
+    // 前端 fetch 相对路径即可，不必直连 api.github.com（免跨域 / 免限流）。
+    if segments.len() == 2 && segments[1] == "update-check" {
+        if method != "GET" {
+            return Err(ApiError::bad_request("Method Not Allowed"));
+        }
+        return Ok(check_update());
     }
 
     // /api/test —— 保存前验证
@@ -204,6 +218,132 @@ fn route(store: &Store, method: &str, path: &str, query: &str, body: &[u8]) -> R
     }
 
     Err(ApiError::not_found("接口不存在"))
+}
+
+// ---------------------------------------------------------------------------
+// 版本更新检查（后端代理 GitHub API，避免前端跨域）
+// ---------------------------------------------------------------------------
+const GITHUB_LATEST_API: &str = "https://api.github.com/repos/fireflyhoo/es-dsl-studio/releases/latest";
+const RELEASES_URL: &str = "https://github.com/fireflyhoo/es-dsl-studio/releases";
+/// GitHub 未认证限流 60 次/小时，缓存 10 分钟；与 server.py 的 UPDATE_TTL_SECS 对齐
+const UPDATE_TTL_SECS: u64 = 600;
+const UPDATE_TIMEOUT_SECS: u64 = 10;
+
+/// "v1.2.3" / "1.2" / "1.0.0-beta.1" -> [1, 2, 3]；无法解析返回 None
+fn parse_ver(s: &str) -> Option<[u64; 3]> {
+    let s = s.trim();
+    let s = s.strip_prefix('v').or_else(|| s.strip_prefix('V')).unwrap_or(s);
+    if !s.starts_with(|c: char| c.is_ascii_digit()) {
+        return None;
+    }
+    let mut out = [0u64; 3];
+    for (i, part) in s.split('.').take(3).enumerate() {
+        let digits: String = part.chars().take_while(|c| c.is_ascii_digit()).collect();
+        out[i] = digits.parse().unwrap_or(0);
+    }
+    Some(out)
+}
+
+fn cmp_ver(a: [u64; 3], b: [u64; 3]) -> i32 {
+    for i in 0..3 {
+        if a[i] != b[i] {
+            return if a[i] > b[i] { 1 } else { -1 };
+        }
+    }
+    0
+}
+
+struct UpdateCache {
+    at: f64,
+    payload: Value,
+}
+
+fn update_cache() -> &'static Mutex<Option<UpdateCache>> {
+    static CACHE: OnceLock<Mutex<Option<UpdateCache>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(None))
+}
+
+/// 以秒为单位的单调时钟（std::time::Instant 换算），不依赖系统时间
+fn now_secs() -> f64 {
+    static START: OnceLock<std::time::Instant> = OnceLock::new();
+    START.get_or_init(std::time::Instant::now).elapsed().as_secs_f64()
+}
+
+fn check_update() -> Value {
+    let current = VERSION;
+
+    // 命中缓存直接返回，避免每次开窗口都打 GitHub
+    if let Ok(guard) = update_cache().lock() {
+        if let Some(c) = guard.as_ref() {
+            if now_secs() - c.at < UPDATE_TTL_SECS as f64 {
+                return c.payload.clone();
+            }
+        }
+    }
+
+    let payload = match fetch_latest_release() {
+        Some(rel) => {
+            let has_update = match (parse_ver(&rel.tag), parse_ver(current)) {
+                (Some(lat), Some(cur)) => cmp_ver(lat, cur) > 0,
+                _ => false,
+            };
+            json!({
+                "ok": true,
+                "current": current,
+                "latest": rel.tag,
+                "hasUpdate": has_update,
+                "url": rel.url,
+            })
+        }
+        // 网络异常 / 限流 / 解析失败：ok=false，前端静默不提示
+        None => json!({
+            "ok": false,
+            "current": current,
+            "latest": null,
+            "hasUpdate": false,
+            "url": RELEASES_URL,
+        }),
+    };
+
+    if let Ok(mut guard) = update_cache().lock() {
+        *guard = Some(UpdateCache { at: now_secs(), payload: payload.clone() });
+    }
+    payload
+}
+
+struct LatestRelease {
+    tag: String,
+    url: String,
+}
+
+fn fetch_latest_release() -> Option<LatestRelease> {
+    let client = Client::builder()
+        .timeout(Duration::from_secs(UPDATE_TIMEOUT_SECS))
+        // GitHub 对默认 UA 直接 403，必须自定义
+        .user_agent(concat!("es-dsl-studio/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .ok()?;
+    let resp = client
+        .get(GITHUB_LATEST_API)
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let body: Value = resp.json().ok()?;
+    let tag = body.get("tag_name").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+    if tag.is_empty() {
+        return None;
+    }
+    let url = body
+        .get("html_url")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(RELEASES_URL)
+        .to_string();
+    Some(LatestRelease { tag, url })
 }
 
 fn parse_body(body: &[u8]) -> Result<Value, ApiError> {

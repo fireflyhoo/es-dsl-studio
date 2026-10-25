@@ -453,6 +453,113 @@ def route_search(src, payload):
 
 
 # --------------------------------------------------------------------------
+# 版本更新检查（服务端代理）
+#
+# 为什么不放前端直连 api.github.com：
+#   1. 浏览器受同源策略约束，第三方 API 的 CORS 头随时可能变化或被网络策略拦截；
+#   2. 未认证请求有 60 次/小时的限流，多个客户端各自请求容易 403；
+#   3. 服务端代理 + TTL 缓存后，所有客户端共享一次查询结果。
+# 桌面端（esdsl:// 自定义协议）在 src-tauri/src/api.rs 有同构实现。
+# --------------------------------------------------------------------------
+GITHUB_REPO = "fireflyhoo/es-dsl-studio"
+GITHUB_LATEST_API = "https://api.github.com/repos/%s/releases/latest" % GITHUB_REPO
+RELEASES_URL = "https://github.com/%s/releases" % GITHUB_REPO
+# GitHub 未认证限流 60 次/小时，缓存 10 分钟足够，也不会让用户等太久
+UPDATE_TTL_SECS = int(os.environ.get("ESDSL_UPDATE_TTL") or 600)
+UPDATE_TIMEOUT_SECS = 10
+
+
+def app_version():
+    """当前版本号：package.json → tauri.conf.json → Cargo.toml，取不到返回 0.0.0。"""
+    for rel in ("package.json", os.path.join("src-tauri", "tauri.conf.json")):
+        try:
+            with open(os.path.join(BASE_DIR, rel), "r", encoding="utf-8") as f:
+                v = (json.load(f).get("version") or "").strip()
+            if v:
+                return v
+        except (OSError, ValueError, AttributeError):
+            continue
+    try:
+        with open(os.path.join(BASE_DIR, "src-tauri", "Cargo.toml"), "r", encoding="utf-8") as f:
+            m = re.search(r'^version\s*=\s*"([^"]+)"', f.read(), re.M)
+        if m:
+            return m.group(1)
+    except OSError:
+        pass
+    return "0.0.0"
+
+
+def parse_ver(s):
+    """'v1.2.3' / '1.2' / '1.0.0-beta.1' -> [1, 2, 3]；无法解析返回 None。"""
+    if not s:
+        return None
+    m = re.match(r"^\s*[vV]?(\d+)(?:\.(\d+))?(?:\.(\d+))?", str(s))
+    if not m:
+        return None
+    return [int(m.group(1) or 0), int(m.group(2) or 0), int(m.group(3) or 0)]
+
+
+def cmp_ver(a, b):
+    for i in range(3):
+        d = (a[i] or 0) - (b[i] or 0)
+        if d:
+            return d
+    return 0
+
+
+def fetch_latest_release():
+    """请求 GitHub 最新 release；任何失败都返回 None（调用方静默降级）。"""
+    req = urllib.request.Request(
+        GITHUB_LATEST_API,
+        headers={
+            "Accept": "application/vnd.github+json",
+            # GitHub 对默认 Python-urllib UA 直接 403，必须自定义
+            "User-Agent": "es-dsl-studio/%s" % app_version(),
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=UPDATE_TIMEOUT_SECS) as resp:
+            data = json.loads(resp.read().decode("utf-8", "replace"))
+    except Exception:  # noqa: BLE001 - 网络异常/限流/JSON 错误一律静默
+        return None
+    if not isinstance(data, dict):
+        return None
+    tag = (data.get("tag_name") or "").strip()
+    if not tag:
+        return None
+    url = (data.get("html_url") or "").strip() or RELEASES_URL
+    return {"tag": tag, "url": url}
+
+
+_update_cache = {"at": 0.0, "payload": None}
+_update_lock = threading.Lock()
+
+
+def update_check():
+    """版本检查结果：{ok, current, latest, hasUpdate, url}。带 TTL 缓存防限流。"""
+    now = time.time()
+    with _update_lock:
+        cached = _update_cache["payload"]
+        if cached and now - _update_cache["at"] < UPDATE_TTL_SECS:
+            return cached
+    current = app_version()
+    payload = {"ok": False, "current": current, "latest": None,
+               "hasUpdate": False, "url": RELEASES_URL}
+    rel = fetch_latest_release()
+    if rel:
+        cur = parse_ver(current)
+        lat = parse_ver(rel["tag"])
+        payload["ok"] = True
+        payload["latest"] = rel["tag"]
+        payload["url"] = rel["url"]
+        payload["hasUpdate"] = bool(cur and lat and cmp_ver(lat, cur) > 0)
+    with _update_lock:
+        _update_cache["at"] = now
+        _update_cache["payload"] = payload
+    return payload
+
+
+# --------------------------------------------------------------------------
 # HTTP 处理
 # --------------------------------------------------------------------------
 class Handler(BaseHTTPRequestHandler):
@@ -516,8 +623,16 @@ class Handler(BaseHTTPRequestHandler):
                 "ok": True,
                 "service": "es-dsl-studio",
                 "authRequired": bool(TOKEN),
-                "version": self.server_version,
+                "version": app_version(),
             })
+            return
+
+        # 版本更新检查：公开信息、URL 服务端写死，无需令牌
+        if path == "/api/update-check":
+            if method != "GET":
+                self._json(405, {"error": "Method Not Allowed"})
+                return
+            self._json(200, update_check())
             return
 
         try:

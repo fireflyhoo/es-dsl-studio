@@ -739,7 +739,7 @@ dependencies = [
 
 [[package]]
 name = "es-dsl-studio"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "percent-encoding",
  "reqwest 0.12.28",
