@@ -102,8 +102,10 @@ jobs:
         run: npm ci
 
       # bundle.targets: ["all"] 已在 tauri.conf.json 配置，按平台自动产出全部安装包
-      # （注意：--bundles 的合法值随平台而异，且不接受 "all"，不要传）
+      # （注意：--bundles 的合法值随平台而异，且不接受 "all"，不要传；
+      #  另注意 Windows runner 默认 shell 不是 bash，bash 语法步骤必须显式 shell: bash）
       - name: 构建 ${{ matrix.target }}
+        shell: bash
         run: |
           set +e
           npx tauri build --target ${{ matrix.target }} > /tmp/build.log 2>&1
@@ -112,8 +114,9 @@ jobs:
           echo "构建退出码: $code"
           if [ "$code" -ne 0 ]; then
             # 失败时把关键错误行提为 check-run 注解（无需登录即可经 API 读取，便于快速定位）
-            grep -E "^error" /tmp/build.log | head -10 | sed 's/^/::error::/' || true
-            tail -3 /tmp/build.log | sed 's/^/::error::/' || true
+            sed 's/\x1b\[[0-9;]*m//g' /tmp/build.log > /tmp/build-clean.log
+            grep -E "^error|error\[|error:" /tmp/build-clean.log | head -10 | sed 's/^/::error::/' || true
+            tail -5 /tmp/build-clean.log | sed 's/^/::error::/' || true
           fi
           exit $code
 
