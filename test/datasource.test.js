@@ -248,6 +248,117 @@ eq('fieldDefFromRaw-深拷贝不影响原对象', rawMapping.properties.author.p
   eq('添加字段方法', calls[1].method, 'PUT');
   eq('添加字段 body', calls[1].body, { properties: { price: { type: 'double' } } });
 
+  // ---- 17. 文档 CRUD：transport 请求构造 ----
+  calls.length = 0;
+  await t.queryDocs('orders', { query: { match_all: {} }, from: 0, size: 10 });
+  eq('查询文档 URL', calls[0].url, 'http://localhost:9200/orders/_search');
+  eq('查询文档方法', calls[0].method, 'POST');
+  eq('查询文档自动带 track_total_hits', calls[0].body.track_total_hits, true);
+  eq('查询文档透传 query', calls[0].body.query, { match_all: {} });
+
+  calls.length = 0;
+  await t.createDoc('orders', { sku: 'A1', price: 9.9 }, '');
+  eq('新增文档-自动ID URL', calls[0].url, 'http://localhost:9200/orders/_doc');
+  eq('新增文档-自动ID方法', calls[0].method, 'POST');
+  eq('新增文档-自动ID body', calls[0].body, { sku: 'A1', price: 9.9 });
+
+  calls.length = 0;
+  await t.createDoc('orders', { sku: 'A1' }, 'order-1');
+  eq('新增文档-指定ID URL', calls[0].url, 'http://localhost:9200/orders/_doc/order-1');
+  eq('新增文档-指定ID方法', calls[0].method, 'PUT');
+  eq('新增文档-指定ID body', calls[0].body, { sku: 'A1' });
+
+  calls.length = 0;
+  await t.replaceDoc('orders', 'order-1', { sku: 'A2' });
+  eq('更新文档 URL', calls[0].url, 'http://localhost:9200/orders/_doc/order-1');
+  eq('更新文档方法', calls[0].method, 'PUT');
+  eq('更新文档 body', calls[0].body, { sku: 'A2' });
+
+  calls.length = 0;
+  await t.deleteDoc('orders', 'order-1');
+  eq('删除文档 URL', calls[0].url, 'http://localhost:9200/orders/_doc/order-1');
+  eq('删除文档方法', calls[0].method, 'DELETE');
+  eq('删除文档无 body', calls[0].body, null);
+
+  // ---- 18. 筛选条件 → ES query 纯函数 ----
+  const tfields = [
+    { path: 'order_no', type: 'keyword' },
+    { path: 'amount', type: 'double' },
+    { path: 'quantity', type: 'integer' },
+    { path: 'paid', type: 'boolean' },
+    { path: 'created', type: 'date' },
+    { path: 'remark', type: 'text' },
+  ];
+  eq('条件-等于(keyword)', E.condToClause({ field: 'order_no', op: 'eq', value: 'A1' }, tfields),
+    { term: { order_no: 'A1' } });
+  eq('条件-等于(布尔)', E.condToClause({ field: 'paid', op: 'eq', value: 'true' }, tfields),
+    { term: { paid: true } });
+  eq('条件-不等于', E.condToClause({ field: 'order_no', op: 'ne', value: 'A1' }, tfields),
+    { bool: { must_not: { term: { order_no: 'A1' } } } });
+  eq('条件-大于等于(数字)', E.condToClause({ field: 'amount', op: 'gte', value: '500' }, tfields),
+    { range: { amount: { gte: 500 } } });
+  eq('条件-小于(数字)', E.condToClause({ field: 'quantity', op: 'lt', value: '3' }, tfields),
+    { range: { quantity: { lt: 3 } } });
+  eq('条件-包含(keyword→wildcard)', E.condToClause({ field: 'order_no', op: 'contains', value: '0003' }, tfields),
+    { wildcard: { order_no: '*0003*' } });
+  eq('条件-包含(text→match_phrase)', E.condToClause({ field: 'remark', op: 'contains', value: '测试' }, tfields),
+    { match_phrase: { remark: '测试' } });
+  eq('条件-通配符元字符转义', E.condToClause({ field: 'order_no', op: 'contains', value: 'a*b?c' }, tfields),
+    { wildcard: { order_no: '*a\\*b\\?c*' } });
+  eq('条件-开头是', E.condToClause({ field: 'order_no', op: 'prefix', value: 'ORD' }, tfields),
+    { prefix: { order_no: 'ORD' } });
+  eq('条件-有值', E.condToClause({ field: 'remark', op: 'exists', value: '' }, tfields),
+    { exists: { field: 'remark' } });
+  eq('条件-未知字段不校正类型', E.condToClause({ field: 'unknown', op: 'eq', value: 'x' }, tfields),
+    { term: { unknown: 'x' } });
+
+  const emptyView = { conds: [], logic: 'must', from: 0, size: 20 };
+  eq('查询体-无条件走 match_all', E.buildDocsQuery(emptyView, tfields), { query: { match_all: {} }, from: 0, size: 20 });
+  eq('查询体-空值条件被跳过', E.buildDocsQuery({
+    conds: [{ field: 'order_no', op: 'eq', value: '  ' }, { field: '', op: 'eq', value: 'x' }],
+    logic: 'must', from: 0, size: 20,
+  }, tfields), { query: { match_all: {} }, from: 0, size: 20 });
+  eq('查询体-单条件直接作 query', E.buildDocsQuery({
+    conds: [{ field: 'paid', op: 'eq', value: 'true' }], logic: 'must', from: 0, size: 20,
+  }, tfields), { query: { term: { paid: true } }, from: 0, size: 20 });
+  eq('查询体-多条件 AND', E.buildDocsQuery({
+    conds: [{ field: 'paid', op: 'eq', value: 'true' }, { field: 'amount', op: 'gte', value: '500' }],
+    logic: 'must', from: 0, size: 20,
+  }, tfields).query, {
+    bool: { must: [{ term: { paid: true } }, { range: { amount: { gte: 500 } } }] },
+  });
+  eq('查询体-多条件 OR', E.buildDocsQuery({
+    conds: [{ field: 'paid', op: 'eq', value: 'true' }, { field: 'amount', op: 'gte', value: '500' }],
+    logic: 'should', from: 0, size: 20,
+  }, tfields).query, {
+    bool: { should: [{ term: { paid: true } }, { range: { amount: { gte: 500 } } }], minimum_should_match: 1 },
+  });
+  eq('查询体-排序拼装', E.buildDocsQuery({
+    conds: [], logic: 'must', from: 40, size: 10, sort: { field: 'amount', order: 'desc' },
+  }, tfields), {
+    query: { match_all: {} }, from: 40, size: 10, sort: [{ amount: { order: 'desc' } }],
+  });
+  eq('查询体-null 视图兜底', E.buildDocsQuery(null, tfields), { query: { match_all: {} }, from: 0, size: 20 });
+
+  /* ---- _meta.studioFieldOrder：字段创建顺序还原 ---- */
+  const tOrderFields = [
+    { path: 'amount', type: 'double' }, { path: 'created', type: 'date' },
+    { path: 'customer', type: 'keyword' }, { path: 'order_no', type: 'keyword' },
+    { path: 'paid', type: 'boolean' }, { path: 'quantity', type: 'integer' },
+    { path: 'remark', type: 'text' },
+  ];
+  eq('顺序-按 _meta 记录重排', E.sortFieldsByOrder(tOrderFields,
+    ['order_no', 'customer', 'amount', 'quantity', 'paid', 'created', 'remark']).map((f) => f.path).join(','),
+    'order_no,customer,amount,quantity,paid,created,remark');
+  eq('顺序-无记录时原样返回', E.sortFieldsByOrder(tOrderFields, null).map((f) => f.path).join(','),
+    'amount,created,customer,order_no,paid,quantity,remark');
+  eq('顺序-未列入的字段排后面', E.sortFieldsByOrder(tOrderFields, ['paid', 'order_no']).map((f) => f.path).join(','),
+    'paid,order_no,amount,created,customer,quantity,remark');
+  eq('顺序-不修改入参数组', (() => {
+    E.sortFieldsByOrder(tOrderFields, ['remark', 'amount']);
+    return tOrderFields[0].path;
+  })(), 'amount');
+
   console.log(failed === 0 ? '\n全部通过' : '\n有 ' + failed + ' 项失败');
   process.exit(failed === 0 ? 0 : 1);
 })();

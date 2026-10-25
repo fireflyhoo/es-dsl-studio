@@ -252,7 +252,33 @@ def check_alias_name(alias):
     return alias
 
 
-def route_es(src, action, index=None, query=None, body=None, alias=None):
+# 文档 ID：ES 允许较宽的字符集，这里收紧到 URL 路径安全子集，避免注入 / 路径穿越
+SAFE_DOC_ID_RE = re.compile(r"^[A-Za-z0-9_\-\.@:+]{1,512}$")
+
+
+def check_doc_id(doc_id):
+    if not doc_id or not SAFE_DOC_ID_RE.match(doc_id):
+        raise ApiError(400, "非法文档 ID：只能用字母 / 数字 / _ - . @ : +，长度 1-512")
+    return doc_id
+
+
+def es_refresh(src, enc):
+    """写操作后立即 refresh，让数据表格下一秒就能查到新文档（ES 默认近实时）。"""
+    try:
+        es_request(src, "/%s/_refresh" % enc, method="POST")
+    except ApiError:
+        pass  # refresh 失败不阻塞主操作（集群可能禁用了 _refresh）
+
+
+def _clamp_int(val, lo, hi, default):
+    try:
+        n = int(val)
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(hi, n))
+
+
+def route_es(src, action, index=None, query=None, body=None, alias=None, doc_id=None):
     """把前端动作翻译成 ES 请求。"""
     enc = urllib.parse.quote(index, safe="*,-._") if index else ""
 
@@ -323,6 +349,52 @@ def route_es(src, action, index=None, query=None, body=None, alias=None):
             raise ApiError(403, "该数据源处于只读模式，禁止删除别名")
         aenc = urllib.parse.quote(alias, safe="-._")
         return es_request(src, "/%s/_alias/%s" % (enc, aenc), method="DELETE")
+
+    # ---------- 文档 CRUD（数据表格） ----------
+    if action == "doc-query":
+        body = body if isinstance(body, dict) else {}
+        size = _clamp_int(body.get("size"), 1, 100, 20)
+        frm = _clamp_int(body.get("from"), 0, 10000, 0)
+        payload = {}
+        if isinstance(body.get("query"), dict):
+            payload["query"] = body["query"]
+        if isinstance(body.get("sort"), list):
+            payload["sort"] = body["sort"]
+        return es_request(
+            src,
+            "/%s/_search?track_total_hits=true&size=%d&from=%d" % (enc, size, frm),
+            method="POST",
+            body=payload,
+        )
+
+    if action in ("doc-create", "doc-replace", "doc-delete"):
+        if src.get("readonly"):
+            raise ApiError(403, "该数据源处于只读模式，禁止写入文档")
+        doc = body.get("doc") if isinstance(body, dict) else None
+
+        if action == "doc-delete":
+            did = check_doc_id(doc_id)
+            res = es_request(src, "/%s/_doc/%s" % (enc, urllib.parse.quote(did, safe="")), method="DELETE")
+            es_refresh(src, enc)
+            return res
+
+        if not isinstance(doc, dict) or not doc:
+            raise ApiError(400, "文档内容不能为空（至少包含一个字段）")
+
+        if action == "doc-create":
+            did = (body.get("id") or "").strip() if isinstance(body, dict) else ""
+            if did:
+                did = check_doc_id(did)
+                res = es_request(src, "/%s/_doc/%s" % (enc, urllib.parse.quote(did, safe="")), method="PUT", body=doc)
+            else:
+                res = es_request(src, "/%s/_doc" % enc, method="POST", body=doc)
+            es_refresh(src, enc)
+            return res
+
+        did = check_doc_id(doc_id)
+        res = es_request(src, "/%s/_doc/%s" % (enc, urllib.parse.quote(did, safe="")), method="PUT", body=doc)
+        es_refresh(src, enc)
+        return res
 
     raise ApiError(404, "未知操作：" + str(action))
 
@@ -464,6 +536,30 @@ class Handler(BaseHTTPRequestHandler):
 
             action = segments[3]
             src = find_source(sid)
+
+            # 文档 CRUD：/api/sources/<id>/docs/<index>[/<doc_id>]
+            if action == "docs":
+                if len(segments) < 5:
+                    raise ApiError(404, "接口或路径参数不合法")
+                index = check_index_name(segments[4])
+                if len(segments) == 5:
+                    if method == "POST":
+                        self._json(200, route_es(src, "doc-query", index, body=self._read_json()))
+                        return
+                    if method == "PUT":
+                        self._json(200, route_es(src, "doc-create", index, body=self._read_json()))
+                        return
+                    raise ApiError(405, "Method Not Allowed")
+                if len(segments) == 6:
+                    doc_id = check_doc_id(segments[5])
+                    if method == "PUT":
+                        self._json(200, route_es(src, "doc-replace", index, body=self._read_json(), doc_id=doc_id))
+                        return
+                    if method == "DELETE":
+                        self._json(200, route_es(src, "doc-delete", index, doc_id=doc_id))
+                        return
+                    raise ApiError(405, "Method Not Allowed")
+                raise ApiError(404, "接口或路径参数不合法")
 
             if action == "search":
                 if method != "POST":
