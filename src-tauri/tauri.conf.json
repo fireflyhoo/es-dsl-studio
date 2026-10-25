@@ -4,8 +4,7 @@
   "version": "1.0.0",
   "identifier": "com.esdsl.studio",
   "build": {
-    "frontendDist": "../web",
-    "devUrl": "esdsl://localhost/index.html"
+    "frontendDist": "../web"
   },
   "app": {
     "windows": [

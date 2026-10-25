@@ -1350,7 +1350,7 @@
     type: 'aggs', cat: 'agg', cn: '聚合统计', valueKey: null,
     desc: '搜索请求的 aggs 字段：一组命名聚合（指标 + 桶），桶聚合里还能继续嵌子聚合。',
     fields: [],
-    listKids: { key: 'aggs', label: '聚合列表 · 拖入聚合节点' },
+    listKids: { key: 'aggs', label: '聚合列表 · 拖入聚合节点', accept: 'agg' },
     // 直接产出 name -> 聚合体 映射，由 exportBody 挂到 body.aggs
     build(n) {
       const o = {};
