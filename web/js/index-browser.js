@@ -10,6 +10,7 @@
     formatBytes, formatCount, hostOf, typeCounts, filterFields,
     parseDetail, indexSettingsSummary, transport, Sources, AUTH_TYPES,
     fieldDefFromRaw, buildMappingBody, rowToDef,
+    DATA_OPS, buildDocsQuery,
   } = E;
 
   /* ---------------- 状态 ---------------- */
@@ -19,8 +20,9 @@
     conn: {},        // sid -> {status, info, rows, err, at}
     detail: {},      // sid|index -> {data|err}
     pending: {},     // sid|index -> Promise
-    sample: {},      // sid|index -> {data|err}
-    samplePending: {},
+    docs: {},        // sid|index -> {data|err}（数据 tab 的 _search 结果）
+    docsPending: {},
+    docsView: {},    // sid|index -> {conds, logic, sort, from, size, sel, checkedAll}
     expandedSrc: {}, // sid -> bool（默认展开）
     expandedIdx: {}, // sid|index -> bool
     active: null,    // {sid, index}
@@ -34,7 +36,6 @@
     // rows: [{name, type, meta, props, propsOpen}]，sel: {已有字段路径: true}
     batch: null,
   };
-  let renderSampleColBtn = null; // 样本数据「选择列」按钮（renderSample 内赋值）
 
   /* ---------------- DOM 工具 ---------------- */
   const $ = (s) => document.querySelector(s);
@@ -80,6 +81,7 @@
     edit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
     trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>',
     copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
+    chevron: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>',
   };
 
   /* ---------------- 类型着色（分组表在 es-client.js，索引管理与字段联想共用） ---------------- */
@@ -153,24 +155,43 @@
     return p;
   }
 
-  async function loadSample(sid, index) {
+  /* ---------------- 数据 tab（文档查询） ---------------- */
+  function docsViewOf(sid, index) {
     const key = sid + '|' + index;
-    if (state.sample[key] && !state.sample[key].err) return;
-    if (state.samplePending[key]) return;
+    if (!state.docsView[key]) {
+      state.docsView[key] = {
+        conds: [{ field: '', op: 'contains', value: '' }],
+        logic: 'must',
+        sort: null,          // {field, order}
+        from: 0,
+        size: 20,
+        sel: {},             // docId -> true（当前页勾选）
+        checkedAll: false,
+      };
+    }
+    return state.docsView[key];
+  }
+
+  async function loadDocs(sid, index, resetPage) {
+    const key = sid + '|' + index;
+    const view = docsViewOf(sid, index);
+    if (resetPage) { view.from = 0; view.sel = {}; view.checkedAll = false; }
+    if (state.docsPending[key]) return;
     const src = srcOf(sid);
     if (!src) return;
+    const body = buildDocsQuery(view);
     const p = (async () => {
       try {
-        const data = await transport(src).sample(index, 10);
-        state.sample[key] = { data: data };
+        const data = await transport(src).queryDocs(index, body);
+        state.docs[key] = { data: data };
       } catch (e) {
-        state.sample[key] = { err: e.message || String(e) };
+        state.docs[key] = { err: e.message || String(e) };
       } finally {
-        delete state.samplePending[key];
-        if (state.active && state.active.sid === sid && state.active.index === index && state.tab === 'sample') renderDetail();
+        delete state.docsPending[key];
+        if (state.active && state.active.sid === sid && state.active.index === index && state.tab === 'data') renderDetail();
       }
     })();
-    state.samplePending[key] = p;
+    state.docsPending[key] = p;
     if (state.active && state.active.sid === sid && state.active.index === index) renderDetail();
   }
 
@@ -343,6 +364,7 @@
     const emptyEl = $('#idx-empty');
     const contentEl = $('#idx-content');
     if (!emptyEl || !contentEl) return;
+    dselClose(); // 详情整体重绘，筛选栏下拉浮层先收起（DOM 重建后旧浮层会失效）
 
     const sel = state.active;
     if (!sel) {
@@ -407,9 +429,9 @@
     }
     else if (state.tab === 'settings') body.appendChild(renderSettings(data));
     else if (state.tab === 'aliases') body.appendChild(renderAliases(data));
-    else if (state.tab === 'sample') {
-      if (!state.sample[key]) { loadSample(sel.sid, sel.index); body.appendChild(h('div', 'detail-loading', '正在抽样…')); }
-      else body.appendChild(renderSample(state.sample[key]));
+    else if (state.tab === 'data') {
+      if (!state.docs[key]) { loadDocs(sel.sid, sel.index); body.appendChild(h('div', 'detail-loading', '正在加载数据…')); }
+      else body.appendChild(renderData(state.docs[key], sel, data, meta));
     } else if (state.tab === 'raw') body.appendChild(renderRaw(data));
   }
 
@@ -479,8 +501,8 @@
     const sel = h('select');
     sel.id = 'fld-type';
     sel.innerHTML = '<option value="all">全部类型（' + data.fields.length + '）</option>' +
-      counts.map((c) => '<option value="' + esc(c.type) + '"' + (state.fieldType === c.type ? ' selected' : '') + '>' +
-        esc(c.type) + '（' + c.count + '）</option>').join('');
+      counts.map((c) => '<option value="' + esc(c.type) + '"' + (state.fieldType === c.type ? ' selected' : '') +
+        ' data-type="' + esc(c.type) + '">' + esc(c.type) + '（' + c.count + '）</option>').join('');
     const copyBtn = h('button', 'btn sm', '复制可见字段');
     copyBtn.dataset.act = 'copy-visible-fields';
     const batchBtn = h('button', 'btn sm primary', ICON.edit + '批量编辑字段');
@@ -490,6 +512,7 @@
     bar.appendChild(sel);
     bar.appendChild(copyBtn);
     bar.appendChild(batchBtn);
+    upgradeDataSelects(bar); // 原生 select → 自绘下拉
     box.appendChild(bar);
 
     const list = filterFields(data.fields, state.fieldFilter, state.fieldType);
@@ -592,95 +615,433 @@
     return box;
   }
 
-  function renderSample(rec) {
-    if (window.ESCols) window.ESCols.close(); // 切页签/重渲染时收起浮层
-    const box = h('div', 'tab-pane');
-    if (!rec || rec.err) {
-      box.appendChild(h('div', 'detail-loading bad', (rec && rec.err) || '抽样失败'));
-      const retry = h('button', 'btn sm', '重试');
-      retry.dataset.act = 'retry-sample';
-      box.appendChild(retry);
-      return box;
-    }
-    const resp = rec.data || {};
-    const hitsWrap = resp.hits || {};
-    const hits = hitsWrap.hits || [];
-    const total = typeof hitsWrap.total === 'object' ? (hitsWrap.total || {}).value : hitsWrap.total;
-
-    const bar = h('div', 'fields-toolbar');
-    bar.innerHTML = '<span class="mono dim">返回 ' + hits.length + ' 条' +
-      (total !== undefined ? ' · 命中 ' + formatCount(total) : '') + '</span>' +
-      '<span style="flex:1"></span>';
-    const btn = h('button', 'btn sm', '重新抽样');
-    btn.dataset.act = 'retry-sample';
-    bar.appendChild(btn);
-    if (window.ESCols) {
-      const colBtn = h('button', 'btn sm cp-btn', '选择列');
-      colBtn.title = '选择表格展示哪些列（按索引记忆）';
-      bar.appendChild(colBtn);
-      renderSampleColBtn = colBtn; // 供表格渲染后更新计数徽标
-    }
-    box.appendChild(bar);
-
-    if (!hits.length) {
-      box.appendChild(h('div', 'detail-loading', '该索引暂无文档'));
-      return box;
-    }
-
+  /* ---------------- 数据 tab：列集合与单元格 ---------------- */
+  // 列集合：mapping 顶层字段在前，hits 里出现的新 key 追加
+  function collectDataCols(data, hits) {
     const cols = [];
     const seen = {};
+    for (const f of (data && data.fields) || []) {
+      if (f.depth === 0 && !f.isMultiField && !seen[f.path]) { seen[f.path] = 1; cols.push(f.path); }
+    }
     for (const it of hits) {
       const s = it._source || {};
       for (const k of Object.keys(s)) {
         if (!seen[k]) { seen[k] = 1; cols.push(k); }
       }
     }
-    const idxName = (state.active && state.active.index) || '';
-    const vis = window.ESCols ? window.ESCols.visible(cols, idxName) : { cols: cols.slice(0, 14), saved: false };
-    const showCols = vis.cols;
-    if (renderSampleColBtn) window.ESCols.badge(renderSampleColBtn, '选择列', showCols.length, cols.length);
+    return cols;
+  }
 
-    const table = h('table', 'fields-table sample-table');
-    table.innerHTML = '<thead><tr><th>#</th>' + showCols.map((c) => '<th>' + esc(c) + '</th>').join('') + '</tr></thead>';
+  function dataCellText(v) {
+    if (v === undefined || v === null) return { text: '—', full: '', empty: true };
+    let text;
+    if (typeof v === 'object') text = JSON.stringify(v);
+    else text = String(v);
+    return { text: text, full: text, empty: false };
+  }
+
+  /* ---------------- 数据 tab 渲染 ---------------- */
+  function renderData(rec, sel, data, meta) {
+    const box = h('div', 'tab-pane data-pane');
+    const view = docsViewOf(sel.sid, sel.index);
+    const readonlySrc = !!(srcOf(sel.sid) || {}).readonly;
+
+    if (!rec || rec.err) {
+      box.appendChild(h('div', 'detail-loading bad', (rec && rec.err) || '查询失败'));
+      const retry = h('button', 'btn sm', '重试');
+      retry.dataset.act = 'docs-refresh';
+      box.appendChild(retry);
+      return box;
+    }
+
+    const resp = rec.data || {};
+    const hitsWrap = resp.hits || {};
+    const hits = hitsWrap.hits || [];
+    const total = typeof hitsWrap.total === 'object' ? (hitsWrap.total || {}).value : hitsWrap.total;
+
+    box.appendChild(renderDataToolbar(view, data, sel, hits, readonlySrc));
+
+    if (!hits.length) {
+      const empty = h('div', 'data-empty');
+      const condActive = view.conds.some((c) => c.field && (c.op === 'exists' || String(c.value || '').trim() !== ''));
+      empty.innerHTML = condActive
+        ? '<b>没有符合条件的记录</b><div>调整筛选条件后重试，或点「重置」清空条件</div>'
+        : '<b>该索引暂无文档</b><div>点右上角「+ 添加记录」写入第一条数据</div>';
+      box.appendChild(empty);
+      return box;
+    }
+
+    const cols = collectDataCols(data, hits);
+    const selCount = Object.keys(view.sel).length;
+    const pageFrom = view.from + 1;
+    const pageTo = view.from + hits.length;
+
+    // 状态行
+    const status = h('div', 'data-status');
+    status.innerHTML =
+      '<span>命中 <b>' + formatCount(total) + '</b> 条</span>' +
+      '<span class="dim">·</span><span>第 ' + pageFrom + ' - ' + pageTo + ' 条</span>' +
+      (view.sort ? '<span class="dim">·</span><span>排序 <span class="mono">' + esc(view.sort.field) + '</span> ' + (view.sort.order === 'asc' ? '↑' : '↓') + '</span>' : '') +
+      '<span class="data-sel-count"' + (selCount ? '' : ' hidden') + '>已选 ' + selCount + ' 条</span>' +
+      '<span style="flex:1"></span>' +
+      (readonlySrc ? '<span class="data-ro" title="该数据源为只读模式">只读</span>' : '');
+    box.appendChild(status);
+
+    // 表格
+    const table = h('table', 'fields-table data-table');
+    const headCells = ['<th class="data-cell-check"><input type="checkbox" data-act="docs-check-all"' + (view.checkedAll ? ' checked' : '') + ' title="全选 / 取消本页"></th>',
+      '<th class="data-cell-id">_id</th>'];
+    for (const c of cols) {
+      const sorted = view.sort && view.sort.field === c;
+      const arrow = sorted ? (view.sort.order === 'asc' ? ' ↑' : ' ↓') : '';
+      headCells.push('<th data-act="docs-sort" data-field="' + esc(c) + '" class="data-col-head' + (sorted ? ' is-sorted' : '') + '" title="点击排序：' + esc(c) + '">' +
+        '<span>' + esc(c) + '</span><span class="data-sort-arrow">' + arrow + '</span></th>');
+    }
+    headCells.push('<th class="data-cell-ops" style="width:64px">操作</th>');
+    table.innerHTML = '<thead><tr>' + headCells.join('') + '</tr></thead>';
+
     const tbody = h('tbody');
-    hits.forEach((it, i) => {
-      const tr = h('tr');
-      const cells = showCols.map((c) => {
-        const v = (it._source || {})[c];
-        let text;
-        if (v === undefined || v === null) text = '—';
-        else if (typeof v === 'object') text = JSON.stringify(v);
-        else text = String(v);
-        if (text.length > 60) text = text.slice(0, 60) + '…';
-        return '<td class="mono">' + esc(text) + '</td>';
-      }).join('');
-      tr.innerHTML = '<td class="mono dim">' + (i + 1) + '</td>' + cells;
+    hits.forEach((it) => {
+      const tr = h('tr', 'data-row');
+      tr.dataset.id = it._id;
+      const checked = !!view.sel[it._id];
+      if (checked) tr.classList.add('is-checked');
+      const cells = ['<td class="data-cell-check"><input type="checkbox" data-act="docs-check" data-id="' + esc(it._id) + '"' + (checked ? ' checked' : '') + '></td>',
+        '<td class="data-cell-id mono" title="' + esc(it._id) + '">' + esc(it._id.length > 24 ? it._id.slice(0, 24) + '…' : it._id) + '</td>'];
+      for (const c of cols) {
+        const cell = dataCellText((it._source || {})[c]);
+        const cls = cell.empty ? 'data-cell is-empty' : 'data-cell';
+        const shown = cell.text.length > 120 ? cell.text.slice(0, 120) + '…' : cell.text;
+        cells.push('<td class="' + cls + ' mono" title="' + esc(cell.full.slice(0, 500)) + '">' + esc(shown) + '</td>');
+      }
+      cells.push(
+        '<td class="data-cell-ops">' +
+        '<button class="icon-btn" data-act="docs-edit-doc" data-id="' + esc(it._id) + '" title="编辑这条记录">' + ICON.edit + '</button>' +
+        '<button class="icon-btn del" data-act="docs-del-doc" data-id="' + esc(it._id) + '" title="删除这条记录">' + ICON.trash + '</button>' +
+        '</td>'
+      );
+      tr.innerHTML = cells.join('');
       tbody.appendChild(tr);
     });
     table.appendChild(tbody);
     box.appendChild(table);
 
-    if (vis.saved) {
-      if (showCols.length < cols.length) box.appendChild(h('div', 'sample-cols-hint', '已选 ' + showCols.length + ' / ' + cols.length + ' 列（点「选择列」调整，设置按索引记忆）'));
-    } else if (cols.length > 14) {
-      box.appendChild(h('div', 'sample-cols-hint', '字段较多，默认显示前 14 列（共 ' + cols.length + ' 列），点「选择列」可挑要看的'));
-    }
-
-    if (window.ESCols && renderSampleColBtn) {
-      window.ESCols.attach(renderSampleColBtn, {
-        getAll: () => cols,
-        getSel: () => showCols,
-        onApply: (picked) => {
-          window.ESCols.setPref(idxName, picked);
-          renderDetail();
-        },
-        onReset: () => {
-          window.ESCols.setPref(idxName, null);
-          renderDetail();
-        }
-      });
-    }
+    // 分页
+    const pages = Math.max(1, Math.ceil((total || 0) / view.size));
+    const page = Math.floor(view.from / view.size) + 1;
+    const pager = h('div', 'data-pager');
+    const prev = h('button', 'btn sm', '‹ 上一页');
+    prev.dataset.act = 'docs-page';
+    prev.dataset.dir = 'prev';
+    prev.disabled = view.from <= 0;
+    const next = h('button', 'btn sm', '下一页 ›');
+    next.dataset.act = 'docs-page';
+    next.dataset.dir = 'next';
+    next.disabled = page >= pages;
+    pager.appendChild(prev);
+    pager.appendChild(h('span', 'data-page-info mono', '第 ' + page + ' / ' + pages + ' 页'));
+    pager.appendChild(next);
+    box.appendChild(pager);
     return box;
+  }
+
+  /* ---------------- 筛选栏自绘下拉（替代原生 select 弹层） ----------------
+     原生 select 仍留在 DOM 里（视觉隐藏）当数据载体，所有既有 change 事件链路不变；
+     触发器按钮 + fs-pop 浮层负责展示与交互，选中后同步回隐藏 select 并派发 change。
+     renderDetail 会重建工具栏 DOM，浮层跟随失效，故每次重绘工具栏先关旧浮层再升级新 select。 */
+  const DSEL_SELECTOR = 'select.data-cond-field, select.data-cond-op, select.data-logic, select.data-size, select#fld-type, select.doc-bool';
+  let dselPop = null; // { pop, wrap, sel, btn, items }
+
+  function dselItems(sel) {
+    return Array.prototype.map.call(sel.options, (o) => ({
+      value: o.value,
+      label: o.textContent,
+      sel: o.selected,
+      type: o.dataset.type || '',
+    }));
+  }
+
+  function dselClose() {
+    if (!dselPop) return;
+    dselPop.pop.remove();
+    dselPop.wrap.classList.remove('open');
+    window.removeEventListener('scroll', dselPosition, true);
+    window.removeEventListener('resize', dselPosition);
+    document.removeEventListener('mousedown', dselOutside, true);
+    document.removeEventListener('keydown', dselKey, true);
+    dselPop = null;
+  }
+
+  function dselOutside(e) {
+    if (!dselPop) return;
+    if (dselPop.pop.contains(e.target)) return;
+    if (dselPop.wrap.contains(e.target)) return;
+    dselClose();
+  }
+
+  function dselPosition() {
+    if (!dselPop) return;
+    const r = dselPop.btn.getBoundingClientRect();
+    const w = Math.max(r.width, 132);
+    dselPop.pop.style.width = w + 'px';
+    const h = dselPop.pop.offsetHeight || 220;
+    let top = r.bottom + 5;
+    if (top + h > window.innerHeight - 8) top = Math.max(8, r.top - h - 5);
+    dselPop.pop.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 8 - w)) + 'px';
+    dselPop.pop.style.top = top + 'px';
+  }
+
+  function dselRender() {
+    if (!dselPop) return;
+    dselPop.items = dselItems(dselPop.sel);
+    if (!dselPop.items.length) {
+      dselPop.pop.innerHTML = '<div class="fs-empty">没有可选项</div>';
+      dselPosition();
+      return;
+    }
+    dselPop.pop.innerHTML = dselPop.items.map((it, i) =>
+      '<button type="button" class="fs-item dsel-item' + (it.sel ? ' on' : '') + '" data-i="' + i + '" title="' + esc(it.label) + '">' +
+      '<span class="dsel-check' + (it.sel ? ' on' : '') + '"></span>' +
+      '<span class="fs-path' + (it.value === '' ? ' dim' : '') + '">' + esc(it.label) + '</span>' +
+      (it.type ? typeBadge(it.type) : '') +
+      '</button>').join('');
+    dselPosition();
+  }
+
+  function dselPick(i) {
+    if (!dselPop || !dselPop.items[i]) return;
+    const it = dselPop.items[i];
+    const sel = dselPop.sel;
+    if (sel.value === it.value) { dselClose(); return; }
+    sel.value = it.value;
+    // 先同步触发器文案再收起（dselClose 后 dselPop 引用即失效）
+    const o = sel.options[sel.selectedIndex];
+    const label = o ? o.textContent : '';
+    dselPop.btn.querySelector('.dsel-val').textContent = label;
+    dselPop.btn.classList.toggle('is-empty', !sel.value);
+    dselPop.btn.title = label;
+    dselClose();
+    // 走既有 change 链路（改条件 / 改每页条数 / 改逻辑关系都会触发重绘或重查）
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  function dselMoveActive(delta) {
+    if (!dselPop) return;
+    const items = dselPop.pop.querySelectorAll('.fs-item');
+    const n = items.length;
+    if (!n) return;
+    let idx = -1;
+    items.forEach((node, i) => { if (node.classList.contains('kbon')) idx = i; });
+    dselHighlight(delta > 0 ? (idx + 1) % n : (idx - 1 + n) % n);
+  }
+
+  function dselKey(e) {
+    if (!dselPop) return;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      dselMoveActive(e.key === 'ArrowDown' ? 1 : -1);
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      const cur = dselPop.pop.querySelector('.fs-item.kbon');
+      if (cur) dselPick(Number(cur.dataset.i));
+    } else if (e.key === 'Escape') {
+      e.stopPropagation();
+      dselClose();
+    }
+  }
+
+  function dselHighlight(i) {
+    if (!dselPop) return;
+    const items = dselPop.pop.querySelectorAll('.fs-item');
+    items.forEach((node, idx) => node.classList.toggle('kbon', idx === i));
+    if (items[i]) items[i].scrollIntoView({ block: 'nearest' });
+  }
+
+  function dselOpen(wrap) {
+    const sel = wrap.querySelector('select');
+    const btn = wrap.querySelector('.dsel-btn');
+    if (!sel || !btn) return;
+    if (dselPop && dselPop.wrap === wrap) { dselClose(); return; }
+    dselClose();
+    const pop = h('div', 'fs-pop dsel-pop');
+    pop.addEventListener('mousedown', (e) => {
+      e.preventDefault(); // 抢在 blur / 重绘之前，点选稳定生效
+      const item = e.target.closest('.fs-item');
+      if (item) dselPick(Number(item.dataset.i));
+    });
+    document.body.appendChild(pop);
+    dselPop = { pop: pop, wrap: wrap, sel: sel, btn: btn, items: [] };
+    wrap.classList.add('open');
+    window.addEventListener('scroll', dselPosition, true);
+    window.addEventListener('resize', dselPosition);
+    document.addEventListener('mousedown', dselOutside, true);
+    document.addEventListener('keydown', dselKey, true);
+    dselRender();
+    // 默认高亮当前选中项（无选中则第一项）
+    const selIdx = dselPop.items.findIndex((it) => it.sel);
+    dselHighlight(selIdx >= 0 ? selIdx : 0);
+  }
+
+  // 把容器里的目标 select 升级为自绘下拉（幂等：已包 .dsel 的跳过）
+  function upgradeDataSelects(root) {
+    (root || document).querySelectorAll(DSEL_SELECTOR).forEach((sel) => {
+      if (sel.parentElement && sel.parentElement.classList.contains('dsel')) return;
+      const kind = sel.id === 'fld-type' ? 'type' :
+        (sel.classList.contains('data-cond-field') ? 'field' :
+          (sel.classList.contains('data-cond-op') ? 'op' :
+            (sel.classList.contains('data-logic') ? 'logic' :
+              (sel.classList.contains('doc-bool') ? 'bool' : 'size'))));
+      const wrap = document.createElement('span');
+      wrap.className = 'dsel';
+      wrap.dataset.kind = kind;
+      sel.parentNode.insertBefore(wrap, sel);
+      wrap.appendChild(sel);
+      const btn = h('button', 'dsel-btn');
+      btn.type = 'button';
+      btn.innerHTML = '<span class="dsel-val"></span>' + ICON.chevron;
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dselOpen(wrap);
+      });
+      wrap.appendChild(btn);
+      const o = sel.options[sel.selectedIndex];
+      btn.querySelector('.dsel-val').textContent = o ? o.textContent : '';
+      btn.classList.toggle('is-empty', !sel.value);
+      btn.title = o ? o.textContent : '';
+    });
+  }
+
+  function renderDataToolbar(view, data, sel, hits, readonlySrc) {
+    dselClose(); // 工具栏将重建，先收掉可能开着的浮层
+    const bar = h('div', 'data-toolbar');
+
+    // 筛选条件区
+    const conds = h('div', 'data-conds');
+    const cols = collectDataCols(data, hits);
+    // 字段路径 → 类型（用于下拉浮层里的类型徽标）
+    const typeMap = {};
+    for (const f of (data && data.fields) || []) {
+      if (f.depth === 0 && !f.isMultiField && !typeMap[f.path]) typeMap[f.path] = f.type;
+    }
+    const optionsHtml = (cur) => '<option value="">选择字段…</option>' + cols.map((c) =>
+      '<option value="' + esc(c) + '"' + (c === cur ? ' selected' : '') +
+      (typeMap[c] ? ' data-type="' + esc(typeMap[c]) + '"' : '') + '>' + esc(c) + '</option>').join('');
+    const opsHtml = (cur) => DATA_OPS.map(([v, label]) =>
+      '<option value="' + v + '"' + (v === cur ? ' selected' : '') + '>' + label + '</option>').join('');
+
+    view.conds.forEach((c, i) => {
+      const row = h('div', 'data-cond');
+      row.dataset.i = String(i);
+      const fsel = h('select', 'data-cond-field', optionsHtml(c.field));
+      fsel.dataset.i = String(i);
+      const osel = h('select', 'data-cond-op', opsHtml(c.op));
+      osel.dataset.i = String(i);
+      const vin = h('input', 'data-cond-val');
+      vin.dataset.i = String(i);
+      vin.value = c.value || '';
+      vin.placeholder = c.op === 'exists' ? '（无需填值）' : '值';
+      vin.disabled = c.op === 'exists';
+      row.appendChild(fsel);
+      row.appendChild(osel);
+      row.appendChild(vin);
+      if (view.conds.length > 1) {
+        const x = h('button', 'data-cond-x', '✕');
+        x.dataset.act = 'docs-del-cond';
+        x.dataset.i = String(i);
+        x.title = '删除这个条件';
+        row.appendChild(x);
+      }
+      conds.appendChild(row);
+    });
+    bar.appendChild(conds);
+
+    // 条件操作区
+    const condActs = h('div', 'data-cond-acts');
+    const addCond = h('button', 'btn sm', '+ 条件');
+    addCond.dataset.act = 'docs-add-cond';
+    addCond.title = '添加一个筛选条件';
+    condActs.appendChild(addCond);
+    if (view.conds.length > 1) {
+      const logic = h('select', 'data-logic');
+      logic.id = 'docs-logic';
+      logic.title = '多个条件之间的逻辑关系';
+      logic.innerHTML = '<option value="must"' + (view.logic === 'must' ? ' selected' : '') + '>并且（AND）</option>' +
+        '<option value="should"' + (view.logic === 'should' ? ' selected' : '') + '>或者（OR）</option>';
+      condActs.appendChild(logic);
+    }
+    const qBtn = h('button', 'btn sm primary', '查询');
+    qBtn.dataset.act = 'docs-query';
+    qBtn.title = '按当前条件重新查询';
+    condActs.appendChild(qBtn);
+    const resetBtn = h('button', 'btn sm', '重置');
+    resetBtn.dataset.act = 'docs-reset';
+    resetBtn.title = '清空筛选条件与排序';
+    condActs.appendChild(resetBtn);
+    bar.appendChild(condActs);
+
+    // 右侧动作区
+    const acts = h('div', 'data-acts');
+    const refresh = h('button', 'btn sm', '刷新');
+    refresh.dataset.act = 'docs-refresh';
+    refresh.title = '重新执行当前查询';
+    acts.appendChild(refresh);
+
+    const sizeSel = h('select', 'data-size');
+    sizeSel.id = 'docs-size';
+    sizeSel.title = '每页条数';
+    [10, 20, 50, 100].forEach((n) => {
+      const o = document.createElement('option');
+      o.value = String(n);
+      o.textContent = n + ' 条/页';
+      if (n === view.size) o.selected = true;
+      sizeSel.appendChild(o);
+    });
+    acts.appendChild(sizeSel);
+
+    if (!readonlySrc) {
+      const addBtn = h('button', 'btn sm primary', '+ 添加记录');
+      addBtn.dataset.act = 'docs-add';
+      addBtn.title = '向该索引写入一条新文档';
+      acts.appendChild(addBtn);
+
+      const selCount = Object.keys(view.sel).length;
+      const delBtn = h('button', 'btn sm danger', '删除选中' + (selCount ? '（' + selCount + '）' : ''));
+      delBtn.dataset.act = 'docs-del-selected';
+      delBtn.disabled = !selCount;
+      delBtn.title = selCount ? '删除勾选的 ' + selCount + ' 条记录' : '先在表格里勾选记录';
+      acts.appendChild(delBtn);
+    }
+    bar.appendChild(acts);
+    upgradeDataSelects(bar); // 原生 select → 自绘下拉
+    return bar;
+  }
+
+  // 勾选状态变化后局部刷新（不重绘整表，保持滚动位置与输入焦点）
+  function syncDataSelUI() {
+    const sel = state.active;
+    if (!sel || state.tab !== 'data') return;
+    const view = docsViewOf(sel.sid, sel.index);
+    const ids = Object.keys(view.sel);
+    const rows = document.querySelectorAll('#idx-body .data-row');
+    rows.forEach((tr) => {
+      const on = !!view.sel[tr.dataset.id];
+      tr.classList.toggle('is-checked', on);
+      const cb = tr.querySelector('input[type="checkbox"]');
+      if (cb) cb.checked = on;
+    });
+    const allCb = document.querySelector('#idx-body input[data-act="docs-check-all"]');
+    if (allCb) allCb.checked = ids.length > 0 && ids.length === rows.length;
+    const delBtn = document.querySelector('#idx-body button[data-act="docs-del-selected"]');
+    if (delBtn) {
+      delBtn.disabled = !ids.length;
+      delBtn.textContent = '删除选中' + (ids.length ? '（' + ids.length + '）' : '');
+    }
+    const cnt = document.querySelector('#idx-body .data-sel-count');
+    if (cnt) {
+      cnt.textContent = '已选 ' + ids.length + ' 条';
+      cnt.hidden = !ids.length;
+    }
   }
 
   function renderRaw(data) {
@@ -1078,6 +1439,15 @@
       body = { settings: { number_of_shards: shards, number_of_replicas: replicas } };
     }
 
+    // 高级 JSON 里带了 mappings.properties：把字段书写顺序记进 _meta.studioFieldOrder
+    // （ES 的 _mapping 不保留创建顺序，之后「添加记录」表单按它还原）
+    if (body.mappings && body.mappings.properties &&
+        typeof body.mappings.properties === 'object' && !Array.isArray(body.mappings.properties)) {
+      body.mappings._meta = Object.assign({}, body.mappings._meta, {
+        studioFieldOrder: Object.keys(body.mappings.properties),
+      });
+    }
+
     const btn = $('#ix-save');
     btn.disabled = true;
     try {
@@ -1372,6 +1742,20 @@
     renderDetail();
     try {
       await transport(src).putMapping(batch.index, buildMappingBody(newEntries));
+      // ES 的 _mapping 不保留字段顺序（按字母返回）——把创建顺序写进 _meta.studioFieldOrder，
+      // 供「数据 → 添加记录」表单按创建顺序展示。注意 ES 更新 _meta 是整份替换，需先合并旧值
+      try {
+        const key0 = batch.sid + '|' + batch.index;
+        const oldRec = state.detail[key0];
+        const oldMeta = (oldRec && oldRec.data && oldRec.data.rawMapping && oldRec.data.rawMapping._meta) || {};
+        const prevOrder = Array.isArray(oldMeta.studioFieldOrder) ? oldMeta.studioFieldOrder : [];
+        const added = newEntries.map((e) => e.path).filter((p) => prevOrder.indexOf(p) === -1);
+        if (added.length) {
+          await transport(src).putMapping(batch.index, {
+            _meta: Object.assign({}, oldMeta, { studioFieldOrder: prevOrder.concat(added) }),
+          });
+        }
+      } catch (me) { /* _meta 写入失败不影响字段已保存，顺序回退为字母序 */ }
       // 新字段并入「已有字段」并默认勾选，方便紧接着生成 DSL 同步到其他环境
       for (const e of newEntries) batch.sel[e.path] = true;
       batch.rows = [emptyRow()];
@@ -1455,6 +1839,244 @@
       });
       chip.appendChild(x);
       chips.appendChild(chip);
+    });
+  }
+
+  /* ---------------- 记录编辑弹窗（添加 / 编辑文档） ---------------- */
+  let docModal = null; // {mode:'create'|'edit', sid, index, docId, fields, jsonMode, source}
+
+  function docErr(msg) {
+    const box = $('#doc-err');
+    if (box) { box.className = 'ds-test-result bad'; box.textContent = msg; }
+  }
+  function clearDocErr() {
+    const box = $('#doc-err');
+    if (box) { box.className = 'ds-test-result'; box.textContent = ''; }
+  }
+
+  // 顶层字段 + 输入控件类型
+  const DOC_NUMERIC_TYPES = ['integer', 'long', 'short', 'byte', 'float', 'double', 'half_float', 'scaled_float'];
+  function docInputKind(type) {
+    if (type === 'object' || type === 'nested') return 'json';
+    if (type === 'boolean') return 'bool';
+    if (DOC_NUMERIC_TYPES.indexOf(type) !== -1) return 'number';
+    return 'text';
+  }
+
+  function docFieldRow(f, value) {
+    const kind = docInputKind(f.type);
+    const row = h('div', 'doc-field');
+    row.dataset.path = f.path;
+    row.dataset.kind = kind;
+    const label = h('label', 'doc-field-label');
+    label.innerHTML = '<span class="mono">' + esc(f.path) + '</span>' + typeBadge(f.type) +
+      (kind === 'json' ? '<span class="doc-json-tag">JSON</span>' : '');
+    row.appendChild(label);
+
+    let input;
+    if (kind === 'json') {
+      input = document.createElement('textarea');
+      input.className = 'doc-input doc-input-json mono';
+      input.rows = 3;
+      input.spellcheck = false;
+      input.value = value !== undefined && value !== null && typeof value === 'object' ? JSON.stringify(value, null, 2) : '';
+      input.placeholder = '{ "key": "value" }';
+    } else if (kind === 'bool') {
+      input = document.createElement('select');
+      input.className = 'doc-input doc-bool';
+      input.innerHTML = '<option value="">（不设置）</option><option value="true"' + (value === true ? ' selected' : '') + '>true</option>' +
+        '<option value="false"' + (value === false ? ' selected' : '') + '>false</option>';
+    } else if (kind === 'number') {
+      input = document.createElement('input');
+      input.className = 'doc-input mono';
+      input.type = 'number';
+      input.step = 'any';
+      input.value = value !== undefined && value !== null ? String(value) : '';
+    } else {
+      input = document.createElement('input');
+      input.className = 'doc-input';
+      input.type = f.type === 'date' ? 'text' : 'text';
+      input.value = value !== undefined && value !== null ? String(value) : '';
+      input.placeholder = f.type === 'date' ? '如 2026-10-25' : '';
+    }
+    row.appendChild(input);
+    return row;
+  }
+
+  function openDocModal(mode, doc) {
+    dselClose(); // 弹窗将重建表单，先收掉可能开着的浮层
+    const sel = state.active;
+    if (!sel) return;
+    const key = sel.sid + '|' + sel.index;
+    const rec = state.detail[key];
+    const fields = E.sortFieldsByOrder(
+      ((rec && rec.data && rec.data.fields) || []).filter((f) => f.depth === 0 && !f.isMultiField),
+      rec && rec.data && rec.data.rawMapping && rec.data.rawMapping._meta && rec.data.rawMapping._meta.studioFieldOrder
+    );
+    const source = doc && doc._source ? doc._source : {};
+
+    docModal = {
+      mode: mode,
+      sid: sel.sid,
+      index: sel.index,
+      docId: doc ? doc._id : '',
+      fields: fields,
+      jsonMode: false,
+    };
+
+    $('#doc-modal-title').textContent = mode === 'create' ? '添加记录' : '编辑记录';
+    $('#doc-modal-index').textContent = sel.index;
+    clearDocErr();
+
+    // 文档 ID：新建可填（留空自动生成），编辑时锁定
+    const idInput = $('#doc-id');
+    idInput.value = mode === 'edit' ? (doc._id || '') : '';
+    idInput.disabled = mode === 'edit';
+    $('#doc-id-label').style.opacity = mode === 'edit' ? '.55' : '';
+
+    // 表单模式：按 mapping 生成输入行
+    const pane = $('#doc-fields');
+    pane.innerHTML = '';
+    if (!fields.length) {
+      pane.appendChild(h('div', 'form-note', '该索引没有已定义的顶层字段（动态映射索引），请切换到 JSON 模式直接编写文档。'));
+    }
+    for (const f of fields) {
+      pane.appendChild(docFieldRow(f, source[f.path]));
+    }
+    // 布尔字段下拉升级为自绘下拉（与筛选栏 / 字段映射页同款）
+    upgradeDataSelects(pane);
+
+    // JSON 模式：整体文档
+    $('#doc-json').value = JSON.stringify(mode === 'edit' ? source : {}, null, 2);
+
+    setDocMode('form');
+    $('#doc-save').disabled = false;
+    $('#doc-save').textContent = mode === 'create' ? '添加' : '保存修改';
+    $('#doc-mask').classList.add('show');
+    setTimeout(() => {
+      const first = $('#doc-fields .doc-input');
+      if (first) first.focus();
+    }, 60);
+  }
+
+  function setDocMode(mode) {
+    if (!docModal) return;
+    docModal.jsonMode = mode === 'json';
+    $('#doc-form-pane').hidden = docModal.jsonMode;
+    $('#doc-json-pane').hidden = !docModal.jsonMode;
+    document.querySelectorAll('#doc-mode-switch button').forEach((b) => {
+      b.classList.toggle('on', b.dataset.mode === mode);
+    });
+  }
+
+  function collectDocFromForm() {
+    const doc = {};
+    let bad = null;
+    document.querySelectorAll('#doc-fields .doc-field').forEach((row) => {
+      if (bad) return;
+      const path = row.dataset.path;
+      const kind = row.dataset.kind;
+      const el = row.querySelector('.doc-input');
+      if (kind === 'json') {
+        const raw = el.value.trim();
+        if (!raw) return;
+        try { doc[path] = JSON.parse(raw); } catch (e) { bad = '字段 ' + path + ' 不是合法 JSON：' + e.message; }
+      } else if (kind === 'number') {
+        const raw = el.value.trim();
+        if (raw === '') return;
+        const n = Number(raw);
+        if (Number.isNaN(n)) { bad = '字段 ' + path + ' 需要填写数字'; return; }
+        doc[path] = n;
+      } else if (kind === 'bool') {
+        if (el.value === '') return;
+        doc[path] = el.value === 'true';
+      } else {
+        if (el.value.trim() === '') return;
+        doc[path] = el.value;
+      }
+    });
+    return { doc: doc, bad: bad };
+  }
+
+  async function saveDocFlow() {
+    const m = docModal;
+    if (!m) return;
+    clearDocErr();
+    let doc;
+    if (m.jsonMode) {
+      try { doc = JSON.parse($('#doc-json').value); } catch (e) { docErr('JSON 解析失败：' + e.message); return; }
+      if (!doc || typeof doc !== 'object' || Array.isArray(doc)) { docErr('文档必须是一个 JSON 对象'); return; }
+    } else {
+      const r = collectDocFromForm();
+      if (r.bad) { docErr(r.bad); return; }
+      doc = r.doc;
+    }
+    if (!Object.keys(doc).length) { docErr('至少填写一个字段'); return; }
+
+    const src = srcOf(m.sid);
+    if (!src) return;
+    const btn = $('#doc-save');
+    btn.disabled = true;
+    try {
+      if (m.mode === 'create') {
+        const id = $('#doc-id').value.trim();
+        await transport(src).createDoc(m.index, doc, id);
+        toast('已添加记录' + (id ? '（_id：' + id + '）' : ''));
+      } else {
+        await transport(src).replaceDoc(m.index, m.docId, doc);
+        toast('已保存修改（_id：' + m.docId + '）');
+      }
+      closeDocModal();
+      // 文档数会变：强制刷新 detail + 重新查询当前页
+      ensureDetail(m.sid, m.index, true);
+      loadDocs(m.sid, m.index);
+    } catch (e) {
+      if (e.kind === 'auth') openTokenModal(() => saveDocFlow());
+      else docErr(e.message || String(e));
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function closeDocModal() {
+    dselClose(); // 收掉可能开着的下拉浮层
+    $('#doc-mask').classList.remove('show');
+    docModal = null;
+  }
+
+  // 从表格行打开编辑弹窗
+  function openDocEditById(docId) {
+    const sel = state.active;
+    if (!sel) return;
+    const rec = state.docs[sel.sid + '|' + sel.index];
+    const hits = (rec && rec.data && rec.data.hits && rec.data.hits.hits) || [];
+    const hit = hits.find((x) => x._id === docId);
+    if (!hit) { toast('该记录已不在当前页，请刷新后重试'); return; }
+    openDocModal('edit', hit);
+  }
+
+  function deleteDocsFlow(sid, index, ids) {
+    const src = srcOf(sid);
+    if (src && src.readonly) { toast('该数据源处于只读模式'); return; }
+    if (!ids.length) return;
+    confirmDialog({
+      title: ids.length > 1 ? '删除 ' + ids.length + ' 条记录' : '删除记录',
+      desc: '将从索引 <b class="mono">' + esc(index) + '</b> 永久删除' +
+        (ids.length > 1 ? '这 ' + ids.length + ' 条记录' : '这条记录') +
+        (ids.length <= 3 ? '：<div class="mono dim confirm-id-list">' + ids.map(esc).join('<br>') + '</div>' : '') +
+        '，此操作不可撤销。',
+      okText: '永久删除',
+      danger: true,
+      onOk: async () => {
+        const src2 = srcOf(sid);
+        for (const id of ids) {
+          await transport(src2).deleteDoc(index, id);
+        }
+        delete state.docs[sid + '|' + index];
+        ensureDetail(sid, index, true);
+        loadDocs(sid, index);
+        toast('已删除 ' + ids.length + ' 条记录');
+      },
     });
   }
 
@@ -1553,7 +2175,7 @@
       const act = btn.dataset.act;
       if (act === 'refresh') {
         delete state.detail[sid + '|' + index];
-        delete state.sample[sid + '|' + index];
+        delete state.docs[sid + '|' + index];
         ensureDetail(sid, index, true).then(syncBridge);
         renderDetail();
       } else if (act === 'copy-name') {
@@ -1583,15 +2205,61 @@
         renderDetail();
         const s = $('#fld-search');
         if (s) { s.focus(); s.setSelectionRange(pos, pos); }
+        return;
+      }
+      // 数据 tab：筛选条件输入实时同步到 state（不重渲染，避免打断输入）
+      if (e.target.classList && e.target.classList.contains('data-cond-val') && state.active) {
+        const v = docsViewOf(state.active.sid, state.active.index);
+        const i = parseInt(e.target.dataset.i, 10);
+        if (!Number.isNaN(i) && v.conds[i]) v.conds[i].value = e.target.value;
       }
     });
     $('#idx-body').addEventListener('change', (e) => {
       if (e.target.id === 'fld-type') {
         state.fieldType = e.target.value;
         renderDetail();
+        return;
+      }
+      // 数据 tab：条件字段 / 操作符 / 逻辑 / 每页条数 / 勾选
+      if (state.active && state.tab === 'data') {
+        const v = docsViewOf(state.active.sid, state.active.index);
+        const t = e.target;
+        if (t.classList && t.classList.contains('data-cond-field')) {
+          const i = parseInt(t.dataset.i, 10);
+          if (!Number.isNaN(i) && v.conds[i]) v.conds[i].field = t.value;
+        } else if (t.classList && t.classList.contains('data-cond-op')) {
+          const i = parseInt(t.dataset.i, 10);
+          if (!Number.isNaN(i) && v.conds[i]) {
+            v.conds[i].op = t.value;
+            renderDetail(); // exists 无需填值：切换后更新输入框禁用态
+          }
+        } else if (t.id === 'docs-logic') {
+          v.logic = t.value;
+        } else if (t.id === 'docs-size') {
+          v.size = parseInt(t.value, 10) || 20;
+          v.from = 0;
+          v.sel = {};
+          v.checkedAll = false;
+          loadDocs(state.active.sid, state.active.index, false);
+        } else if (t.dataset && t.dataset.act === 'docs-check') {
+          if (t.checked) v.sel[t.dataset.id] = true; else delete v.sel[t.dataset.id];
+          syncDataSelUI();
+        } else if (t.dataset && t.dataset.act === 'docs-check-all') {
+          v.sel = {};
+          if (t.checked) {
+            document.querySelectorAll('#idx-body .data-row').forEach((tr) => { v.sel[tr.dataset.id] = true; });
+          }
+          syncDataSelUI();
+        }
       }
     });
     $('#idx-body').addEventListener('click', (e) => {
+      // 数据行双击 → 编辑记录（renderDetail 会重建 DOM，用 detail 判定代替 dblclick 事件）
+      const dataRow = e.target.closest('.data-row');
+      if (dataRow && e.detail >= 2 && !e.target.closest('button, input, select, label, a')) {
+        openDocEditById(dataRow.dataset.id);
+        return;
+      }
       const btn = e.target.closest('[data-act]');
       if (btn) {
         const act = btn.dataset.act;
@@ -1647,9 +2315,78 @@
           renderDetail();
           return;
         }
-        if (act === 'retry-sample' && state.active) {
-          delete state.sample[state.active.sid + '|' + state.active.index];
+        if (act === 'docs-refresh' && state.active) {
+          delete state.docs[state.active.sid + '|' + state.active.index];
+          loadDocs(state.active.sid, state.active.index);
           renderDetail();
+          return;
+        }
+        if (act === 'docs-query' && state.active) {
+          loadDocs(state.active.sid, state.active.index, true);
+          return;
+        }
+        if (act === 'docs-reset' && state.active) {
+          const v = docsViewOf(state.active.sid, state.active.index);
+          v.conds = [{ field: '', op: 'contains', value: '' }];
+          v.logic = 'must';
+          v.sort = null;
+          v.from = 0;
+          v.sel = {};
+          v.checkedAll = false;
+          loadDocs(state.active.sid, state.active.index, false);
+          renderDetail();
+          return;
+        }
+        if (act === 'docs-add-cond' && state.active) {
+          const v = docsViewOf(state.active.sid, state.active.index);
+          v.conds.push({ field: '', op: 'contains', value: '' });
+          renderDetail();
+          return;
+        }
+        if (act === 'docs-del-cond' && state.active) {
+          const v = docsViewOf(state.active.sid, state.active.index);
+          const i = parseInt(btn.dataset.i, 10);
+          if (!Number.isNaN(i) && v.conds.length > 1) v.conds.splice(i, 1);
+          renderDetail();
+          return;
+        }
+        if (act === 'docs-add' && state.active) {
+          const src = srcOf(state.active.sid);
+          if (src && src.readonly) { toast('该数据源处于只读模式'); return; }
+          openDocModal('create');
+          return;
+        }
+        if (act === 'docs-edit-doc') { openDocEditById(btn.dataset.id); return; }
+        if (act === 'docs-del-doc' && state.active) {
+          deleteDocsFlow(state.active.sid, state.active.index, [btn.dataset.id]);
+          return;
+        }
+        if (act === 'docs-del-selected' && state.active) {
+          const v = docsViewOf(state.active.sid, state.active.index);
+          const ids = Object.keys(v.sel);
+          if (!ids.length) { toast('先勾选要删除的记录'); return; }
+          deleteDocsFlow(state.active.sid, state.active.index, ids);
+          return;
+        }
+        if (act === 'docs-page' && state.active) {
+          const v = docsViewOf(state.active.sid, state.active.index);
+          if (btn.dataset.dir === 'prev') v.from = Math.max(0, v.from - v.size);
+          else v.from = v.from + v.size;
+          v.sel = {};
+          v.checkedAll = false;
+          loadDocs(state.active.sid, state.active.index, false);
+          return;
+        }
+        if (act === 'docs-sort' && state.active) {
+          const v = docsViewOf(state.active.sid, state.active.index);
+          const f = btn.dataset.field;
+          if (v.sort && v.sort.field === f) {
+            v.sort = v.sort.order === 'asc' ? { field: f, order: 'desc' } : null;
+          } else {
+            v.sort = { field: f, order: 'asc' };
+          }
+          v.from = 0;
+          loadDocs(state.active.sid, state.active.index, false);
           return;
         }
         if (act === 'copy-settings') {
@@ -1723,6 +2460,24 @@
     $('#dsl-close').addEventListener('click', closeDslModal);
     $('#dsl-mask').addEventListener('click', (e) => { if (e.target === $('#dsl-mask')) closeDslModal(); });
 
+    // 记录编辑弹窗（数据 tab）
+    $('#doc-cancel').addEventListener('click', closeDocModal);
+    $('#doc-save').addEventListener('click', () => saveDocFlow());
+    $('#doc-mask').addEventListener('click', (e) => { if (e.target === $('#doc-mask')) closeDocModal(); });
+    $('#doc-mode-switch').addEventListener('click', (e) => {
+      const b = e.target.closest('button[data-mode]');
+      if (b) setDocMode(b.dataset.mode);
+    });
+    // JSON 模式 / 文档 ID 输入框：Ctrl|Cmd+Enter 直接保存
+    $('#doc-json').addEventListener('keydown', (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); saveDocFlow(); }
+    });
+    $('#doc-id').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); saveDocFlow(); }
+    });
+    // 表单输入时清除错误提示
+    $('#doc-mask').addEventListener('input', () => clearDocErr());
+
     // 确认弹窗
     $('#confirm-cancel').addEventListener('click', closeConfirm);
     $('#confirm-ok').addEventListener('click', () => { if (confirmResolve) confirmResolve(); });
@@ -1740,7 +2495,8 @@
 
     document.addEventListener('keydown', (e) => {
       if (e.key !== 'Escape') return;
-      if ($('#dsl-mask').classList.contains('show')) closeDslModal();
+      if ($('#doc-mask').classList.contains('show')) closeDocModal();
+      else if ($('#dsl-mask').classList.contains('show')) closeDslModal();
       else if ($('#alias-mask').classList.contains('show')) closeAliasModal();
       else if ($('#ds-mask').classList.contains('show')) closeSourceModal();
       else if ($('#ix-mask').classList.contains('show')) closeCreateIndexModal();

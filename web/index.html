@@ -225,7 +225,7 @@
             <button data-tab="fields">字段映射</button>
             <button data-tab="settings">设置</button>
             <button data-tab="aliases">别名</button>
-            <button data-tab="sample">样本数据</button>
+            <button data-tab="data">数据</button>
             <button data-tab="raw">原始响应</button>
           </div>
           <div id="idx-body"></div>
@@ -398,6 +398,42 @@
     <div class="m-f">
       <button class="btn" id="alias-cancel2" onclick="document.getElementById('alias-cancel').click()">取消</button>
       <button class="btn primary" id="alias-save">添加别名</button>
+    </div>
+  </div>
+</div>
+
+<!-- 记录编辑弹窗（数据表格 添加 / 编辑文档） -->
+<div id="doc-mask" class="mask">
+  <div id="doc-modal">
+    <div class="m-h"><span id="doc-modal-title">添加记录</span>
+      <span class="dsl-title-index mono" id="doc-modal-index"></span>
+      <button class="icon-btn x" id="doc-cancel" title="关闭">✕</button>
+    </div>
+    <div class="m-b">
+      <div class="doc-mode-row">
+        <label id="doc-id-label">文档 ID（可选，留空自动生成）
+          <input id="doc-id" class="mono" autocomplete="off" spellcheck="false" placeholder="如：order-1001">
+        </label>
+        <div class="doc-mode-switch" id="doc-mode-switch">
+          <button type="button" data-mode="form" class="on">表单</button>
+          <button type="button" data-mode="json">JSON</button>
+        </div>
+      </div>
+      <div id="doc-form-pane">
+        <div class="doc-fields" id="doc-fields"></div>
+        <div class="form-note">留空的字段不会写入；标了 <span class="doc-json-tag">JSON</span> 的字段（对象 / 数组）按 JSON 解析，填写不正确会提示。</div>
+      </div>
+      <div id="doc-json-pane" hidden>
+        <textarea id="doc-json" rows="14" spellcheck="false" placeholder='{
+  "soSym": "TEST001",
+  "status": "active"
+}'></textarea>
+      </div>
+      <div id="doc-err" class="ds-test-result"></div>
+    </div>
+    <div class="m-f">
+      <button class="btn" id="doc-cancel2" onclick="document.getElementById('doc-cancel').click()">取消</button>
+      <button class="btn primary" id="doc-save">保存</button>
     </div>
   </div>
 </div>

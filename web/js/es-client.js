@@ -51,6 +51,112 @@
     return encodeURIComponent(String(name));
   }
 
+  // 文档 ID 路径段：服务端同样会校验字符集，这里编码保证路径安全
+  function encDocId(id) {
+    return encodeURIComponent(String(id));
+  }
+
+  /* ---------------- 数据表格：筛选条件 → ES query（纯函数） ---------------- */
+  const DATA_OPS = [
+    ['contains', '包含'],
+    ['eq', '等于'],
+    ['ne', '不等于'],
+    ['gt', '大于'],
+    ['gte', '大于等于'],
+    ['lt', '小于'],
+    ['lte', '小于等于'],
+    ['prefix', '开头是'],
+    ['exists', '有值'],
+  ];
+  const DATA_NUMERIC_TYPES = {
+    integer: 1, long: 1, short: 1, byte: 1, float: 1, double: 1, half_float: 1, scaled_float: 1,
+  };
+  const DATA_TEXT_TYPES = { text: 1, match_only_text: 1, search_as_you_type: 1 };
+
+  // ES 的 _mapping 不保留字段创建顺序（按字母返回）。Studio 会把创建顺序写进
+  // mapping 的 _meta.studioFieldOrder；这里按该顺序重排字段数组，
+  // 未列入顺序的字段排在后面并保持字母序。无顺序记录时原样返回。
+  function sortFieldsByOrder(fields, orderList) {
+    const list = Array.isArray(fields) ? fields : [];
+    if (!Array.isArray(orderList) || !orderList.length) return list;
+    const rank = {};
+    orderList.forEach((p, i) => { if (!(p in rank)) rank[p] = i; });
+    return list.slice().sort((a, b) => {
+      const ra = (a.path in rank) ? rank[a.path] : Number.MAX_SAFE_INTEGER;
+      const rb = (b.path in rank) ? rank[b.path] : Number.MAX_SAFE_INTEGER;
+      return ra - rb || String(a.path).localeCompare(String(b.path));
+    });
+  }
+
+  // fields：parseDetail 产出的扁平字段数组；按 path 找字段类型
+  function dataFieldTypeOf(fields, path) {
+    const f = (fields || []).find((x) => x.path === path);
+    return f ? f.type : '';
+  }
+
+  // wildcard 值转义：\ * ? ~ 是通配符元字符，用户输入按字面量处理
+  function escWildcard(v) {
+    return String(v).replace(/([\\*?~])/g, '\\$1');
+  }
+
+  // 按字段类型校正输入值：数字 / 布尔走原生类型，其余保持字符串
+  function coerceCondValue(raw, type) {
+    if (DATA_NUMERIC_TYPES[type]) {
+      const n = Number(String(raw).trim());
+      return Number.isNaN(n) ? raw : n;
+    }
+    if (type === 'boolean') {
+      const s = String(raw).trim().toLowerCase();
+      if (s === 'true') return true;
+      if (s === 'false') return false;
+    }
+    return raw;
+  }
+
+  // 单条件 → ES query 子句
+  function condToClause(c, fields) {
+    const type = dataFieldTypeOf(fields, c.field);
+    const raw = c.value;
+    switch (c.op) {
+      case 'eq': return { term: { [c.field]: coerceCondValue(raw, type) } };
+      case 'ne': return { bool: { must_not: { term: { [c.field]: coerceCondValue(raw, type) } } } };
+      case 'gt': case 'gte': case 'lt': case 'lte': {
+        const op = { gt: 'gt', gte: 'gte', lt: 'lt', lte: 'lte' }[c.op];
+        return { range: { [c.field]: { [op]: coerceCondValue(raw, type) } } };
+      }
+      case 'contains':
+        // text 字段走 match_phrase；keyword 等精确字段走 wildcard（LIKE %v% 语义）
+        if (DATA_TEXT_TYPES[type]) return { match_phrase: { [c.field]: raw } };
+        return { wildcard: { [c.field]: '*' + escWildcard(raw) + '*' } };
+      case 'prefix': return { prefix: { [c.field]: raw } };
+      case 'exists': return { exists: { field: c.field } };
+      default: return null;
+    }
+  }
+
+  // 整个视图状态 → _search 请求体
+  function buildDocsQuery(view, fields) {
+    const v = view || {};
+    const clauses = [];
+    for (const c of v.conds || []) {
+      if (!c.field) continue;
+      if (c.op === 'exists') { clauses.push({ exists: { field: c.field } }); continue; }
+      if (String(c.value == null ? '' : c.value).trim() === '') continue;
+      const cl = condToClause(c, fields);
+      if (cl) clauses.push(cl);
+    }
+    let query = { match_all: {} };
+    if (clauses.length === 1) query = clauses[0];
+    else if (clauses.length > 1) {
+      query = v.logic === 'should'
+        ? { bool: { should: clauses, minimum_should_match: 1 } }
+        : { bool: { must: clauses } };
+    }
+    const body = { query: query, from: v.from || 0, size: v.size || 20 };
+    if (v.sort && v.sort.field) body.sort = [{ [v.sort.field]: { order: v.sort.order } }];
+    return body;
+  }
+
   function b64(text) {
     if (typeof Buffer !== 'undefined') return Buffer.from(String(text), 'utf8').toString('base64');
     const bytes = new TextEncoder().encode(String(text));
@@ -276,6 +382,10 @@
       putMapping: (index, body) => api(base + '/indices/' + encIndex(index) + '/mapping', { method: 'PUT', body: body }),
       addAlias: (index, alias, body) => api(base + '/indices/' + encIndex(index) + '/aliases/' + encAlias(alias), { method: 'PUT', body: body || {} }),
       removeAlias: (index, alias) => api(base + '/indices/' + encIndex(index) + '/aliases/' + encAlias(alias), { method: 'DELETE' }),
+      queryDocs: (index, body) => api(base + '/docs/' + encIndex(index), { method: 'POST', body: body || {}, timeout: 30000 }),
+      createDoc: (index, doc, id) => api(base + '/docs/' + encIndex(index), { method: 'PUT', body: { doc: doc, id: id || '' }, timeout: 30000 }),
+      replaceDoc: (index, docId, doc) => api(base + '/docs/' + encIndex(index) + '/' + encDocId(docId), { method: 'PUT', body: { doc: doc }, timeout: 30000 }),
+      deleteDoc: (index, docId) => api(base + '/docs/' + encIndex(index) + '/' + encDocId(docId), { method: 'DELETE', timeout: 30000 }),
       search: (index, body, timeout) => api(
         base + '/search',
         { method: 'POST', body: { index: index, body: body }, timeout: timeout || 30000 }
@@ -355,6 +465,31 @@
       putMapping: (index, body) => directRequest(src, '/' + encIndex(index) + '/_mapping', { method: 'PUT', body: body }),
       addAlias: (index, alias, body) => directRequest(src, '/' + encIndex(index) + '/_alias/' + encAlias(alias), { method: 'PUT', body: body || {} }),
       removeAlias: (index, alias) => directRequest(src, '/' + encIndex(index) + '/_alias/' + encAlias(alias), { method: 'DELETE' }),
+      queryDocs: (index, body) => directRequest(src, '/' + encIndex(index) + '/_search', {
+        method: 'POST',
+        body: Object.assign({ track_total_hits: true }, body || {}),
+        timeout: 30000,
+      }),
+      createDoc: async (index, doc, id) => {
+        const enc = encIndex(index);
+        const res = id
+          ? await directRequest(src, '/' + enc + '/_doc/' + encDocId(id), { method: 'PUT', body: doc })
+          : await directRequest(src, '/' + enc + '/_doc', { method: 'POST', body: doc });
+        await directRequest(src, '/' + enc + '/_refresh', { method: 'POST' }).catch(() => {});
+        return res;
+      },
+      replaceDoc: async (index, docId, doc) => {
+        const enc = encIndex(index);
+        const res = await directRequest(src, '/' + enc + '/_doc/' + encDocId(docId), { method: 'PUT', body: doc });
+        await directRequest(src, '/' + enc + '/_refresh', { method: 'POST' }).catch(() => {});
+        return res;
+      },
+      deleteDoc: async (index, docId) => {
+        const enc = encIndex(index);
+        const res = await directRequest(src, '/' + enc + '/_doc/' + encDocId(docId), { method: 'DELETE' });
+        await directRequest(src, '/' + enc + '/_refresh', { method: 'POST' }).catch(() => {});
+        return res;
+      },
       search: (index, body, timeout) => {
         const parts = String(index).split(',').map((s) => encIndex(s.trim())).filter(Boolean);
         return directRequest(src, '/' + parts.join(',') + '/_search', {
@@ -668,6 +803,14 @@
     flattenDoc,
     aggRows,
     aggMetricList,
+    sortFieldsByOrder,
+    // 数据表格筛选（纯函数）
+    DATA_OPS,
+    condToClause,
+    buildDocsQuery,
+    escWildcard,
+    coerceCondValue,
+    dataFieldTypeOf,
     // 服务端健康检查（供 UI 展示）
     health: () => api('/api/health'),
   };
