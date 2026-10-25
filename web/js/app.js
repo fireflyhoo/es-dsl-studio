@@ -1242,6 +1242,18 @@
       document.querySelectorAll('#rs-tabs button').forEach((x) => x.classList.toggle('on', x.dataset.tab === rs.tab));
       renderResult();
     });
+    // 结果表格「查看明细」：行内按钮委托点击
+    $('#rs-body').addEventListener('click', (e) => {
+      const v = e.target.closest('[data-act="hit-view"]');
+      if (v) { openHitDetail(+v.dataset.i); }
+    });
+    // 单条明细弹窗：关闭 / 复制
+    $('#hit-close').addEventListener('click', closeHitDetail);
+    $('#hit-mask').addEventListener('click', (e) => { if (e.target === $('#hit-mask')) closeHitDetail(); });
+    $('#hit-body').addEventListener('click', (e) => {
+      if (e.target.closest('[data-act="hit-copy-all"]')) { copyHitDoc('all'); return; }
+      if (e.target.closest('[data-act="hit-copy-src"]')) { copyHitDoc('src'); return; }
+    });
     // 表格「选择列」：按索引记忆展示列
     if (window.ESCols) {
       ESCols.attach($('#rs-cols'), {
@@ -1298,6 +1310,7 @@
         if (selectedId) { deleteNode(selectedId); e.preventDefault(); }
       } else if (e.key === 'Escape') {
         if ($('#modal-mask').classList.contains('show')) closeImport();
+        else if ($('#hit-mask').classList.contains('show')) closeHitDetail();
         else { selectedId = null; renderTree(); renderInspector(); }
       }
     });
@@ -1995,7 +2008,7 @@
     syncColsBtn(vis, info.cols.length);
     let h = '<table class="rs-table"><thead><tr><th>_id</th><th class="num">_score</th>';
     cols.forEach((c) => { h += '<th>' + esc(c) + '</th>'; });
-    h += '</tr></thead><tbody>';
+    h += '<th class="hit-col">明细</th></tr></thead><tbody>';
     rows.forEach((r, i) => {
       h += '<tr><td class="mono">' + esc(r.id) + '</td><td class="num">' +
         (r.score === null || r.score === undefined ? '—' : Number(r.score).toFixed(4)) + '</td>';
@@ -2004,6 +2017,7 @@
         const txt = v === undefined ? '' : cellText(v);
         h += '<td title="' + esc(txt) + '">' + (txt === '' ? '<span style="color:var(--faint)">—</span>' : esc(txt)) + '</td>';
       });
+      h += '<td class="hit-col"><button class="rs-view" data-act="hit-view" data-i="' + i + '">查看</button></td>';
       h += '</tr>';
     });
     h += '</tbody></table>';
@@ -2023,6 +2037,54 @@
     const show = rs.tab === 'table' && !!vis && allN > 0;
     btn.hidden = !show;
     if (show) ESCols.badge(btn, '选择列', vis.cols.length, allN);
+  }
+
+  // 查询结果：单条文档明细弹窗
+  function hitMetaRows(hit) {
+    const keys = ['_index', '_score', '_type', '_version', '_seq_no', '_primary_term', '_routing'];
+    let h = '';
+    keys.forEach((k) => {
+      if (hit[k] === undefined || hit[k] === null) return;
+      let val = hit[k];
+      if (k === '_score' && val !== null) val = Number(val).toFixed(4);
+      h += '<span class="hit-kv"><b>' + esc(k) + '</b><i class="mono">' + esc(String(val)) + '</i></span>';
+    });
+    return h;
+  }
+
+  function openHitDetail(i) {
+    const res = rs.result;
+    if (!res || !res.hits || !res.hits.hits) return;
+    const hit = res.hits.hits[i];
+    if (!hit) return;
+    $('#hit-mask').dataset.idx = String(i);
+    $('#hit-meta-id').textContent = hit._id || '(无 _id)';
+    const meta = hitMetaRows(hit);
+    $('#hit-body').innerHTML =
+      '<div class="hit-meta">' + (meta || '<span class="dim">无额外元信息</span>') + '</div>' +
+      '<div class="hit-actions">' +
+        '<button class="btn sm" data-act="hit-copy-all">复制完整文档</button>' +
+        '<button class="btn sm" data-act="hit-copy-src">仅复制 _source</button>' +
+      '</div>' +
+      '<pre class="json-view" id="hit-src">' + highlight(JSON.stringify(hit._source || {}, null, 2)) + '</pre>';
+    $('#hit-mask').classList.add('show');
+  }
+
+  function closeHitDetail() { $('#hit-mask').classList.remove('show'); }
+
+  function copyHitDoc(which) {
+    const i = +($('#hit-mask').dataset.idx || '-1');
+    const res = rs.result;
+    if (!res || !res.hits || !res.hits.hits) return;
+    const hit = res.hits.hits[i];
+    if (!hit) return;
+    const text = which === 'src'
+      ? JSON.stringify(hit._source || {}, null, 2)
+      : JSON.stringify(hit, null, 2);
+    const done = () => toast(which === 'src' ? '已复制 _source' : '已复制完整文档');
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, () => fallbackCopy(text, done));
+    } else fallbackCopy(text, done);
   }
 
   function resultCsv() {
