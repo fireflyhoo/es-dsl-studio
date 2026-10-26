@@ -1298,7 +1298,7 @@
      F('order', 'order 排序', 'text', { ph: '_count desc 或 avg_price desc' }),
      F('min_doc_count', 'min_doc_count', 'number', { ph: '1' }),
      F('missing', 'missing 缺省桶', 'text')]);
-  aggNode('agg_date_histogram', '日期直方图', '按时间间隔分桶，适合按天 / 小时趋势统计（interval 兼容 ES 6.x / 7.x / 8.x）。',
+  aggNode('agg_date_histogram', '日期直方图', '按时间间隔分桶，适合按天 / 小时趋势统计（用 interval 参数，ES 6.x / 7.x 可用；ES 8.x 请改用 fixed_interval）。',
     [F('field', '日期字段 *', 'text', { req: true, ph: '如 @timestamp' }),
      F('interval', 'interval 间隔 *', 'text', { def: '1d', req: true, ph: '1d / 1h / 30m / day / week / month' }),
      F('format', 'format 键格式', 'text', { ph: 'yyyy-MM-dd' }),

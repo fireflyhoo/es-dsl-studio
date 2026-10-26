@@ -107,6 +107,23 @@ pub fn check_alias_name(alias: &str) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// mapping 类型名合法性（ES 6）：字母/下划线开头，只含字母数字与 _ - .
+/// （与 server.py 的 SAFE_MAPPING_TYPE_RE 一致）
+pub fn check_mapping_type(mtype: &str) -> Result<(), ApiError> {
+    let mut chars = mtype.chars();
+    let first_ok = chars
+        .next()
+        .map(|c| c.is_ascii_alphabetic() || c == '_')
+        .unwrap_or(false);
+    let rest_ok = mtype
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'));
+    if !first_ok || !rest_ok || mtype.len() > 256 {
+        return Err(ApiError::bad_request("非法 mapping 类型名"));
+    }
+    Ok(())
+}
+
 /// 文档 ID 合法性：URL 路径安全子集，长度 1-512（与 server.py 的 SAFE_DOC_ID_RE 一致）
 pub fn check_doc_id(doc_id: &str) -> Result<(), ApiError> {
     let ok = !doc_id.is_empty()
@@ -141,6 +158,13 @@ const ENC_DOC_ID: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUME
 /// 索引名编码（Python: quote(index, safe="*,-._")）
 fn enc_index(index: &str) -> String {
     percent_encoding::utf8_percent_encode(index, ENC_PATH).to_string()
+}
+
+/// 查询串里的 percent 编码值解码（type=xxx 之类）
+fn percent_decode(v: &str) -> String {
+    percent_encoding::percent_decode_str(v)
+        .decode_utf8_lossy()
+        .to_string()
 }
 
 fn parse_error_detail(raw: &str) -> String {
@@ -371,7 +395,23 @@ pub fn route_es(
                 return Err(ApiError::bad_request("字段定义不能为空"));
             }
             let enc = enc_index(index.unwrap_or_default());
-            es_request(src, &format!("/{enc}/_mapping"), "PUT", body)
+            // ES 6 的 mapping 更新要求类型名进 URL（PUT /索引/_mapping/类型），ES 7/8 不带
+            let mut suffix = String::new();
+            if let Some(q) = query {
+                for pair in q.split('&') {
+                    let mut it = pair.splitn(2, '=');
+                    if it.next() == Some("type") {
+                        if let Some(v) = it.next() {
+                            let t = percent_decode(v);
+                            if !t.is_empty() {
+                                check_mapping_type(&t)?;
+                                suffix = format!("/{}", enc_index(&t));
+                            }
+                        }
+                    }
+                }
+            }
+            es_request(src, &format!("/{enc}/_mapping{suffix}"), "PUT", body)
         }
 
         "alias-add" => {
