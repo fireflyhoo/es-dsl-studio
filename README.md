@@ -70,6 +70,19 @@ ES 的查询 DSL 本质上是一棵树：组合查询是内部节点，词项/�
 
 ![选择列](docs/screenshot-columns.png)
 
+### 聚合统计（aggs）
+
+![聚合结果](docs/screenshot-aggregations.png)
+
+聚合不用手写 JSON：左侧「**聚合统计**」分类点一下就把聚合节点加进画布下方的聚合区，右侧属性面板填字段与参数（`terms` 的 size、`date_histogram` 的 interval 等），支持**子聚合**——在父节点下再挂一层，桶里再分桶。
+
+- **搭建**：聚合节点可以和查询节点混排，`DSL JSON` 面板实时同步出最终 `aggs` 结构；属性面板缺必填项（如 `terms` 没填字段）会当场标红提示
+- **结果页签**：请求带了 `aggs` 就自动切到「聚合」页签，分两块
+  - **指标卡**：单值指标（`avg` / `sum` / `min` / `max` / `cardinality` / `value_count`）与多值指标（`stats` / `extended_stats` / `percentiles`）平铺成卡片，一眼看数值
+  - **分布条表格**：桶聚合按「聚合 → 桶/值 → 分布条 → 文档数」成行，条宽按 `doc_count` 相对最大值等比绘制，`terms` / `date_histogram` / `histogram` / `range` / `filters` 及多级子聚合的结果都在同一张表里
+- 聚合节点在**画布树**里和查询节点一样可拖拽排序、包一层 bool、复制、删除，生成的 DSL 与 ES 原生写法一致
+- 集群版本适配：字段映射的读写在 ES 6.x（mapping 带 type）下会自动补上类型名，7.x / 8.x 则用无 type 写法；`date_histogram` 目前用 `interval` 参数（ES 6.x / 7.x 可用），**ES 8.x 已移除该参数**，在 8.x 上需改用 `fixed_interval` / `calendar_interval`
+
 ### DSL 反向导入
 
 ![导入 JSON](docs/screenshot-import.png)

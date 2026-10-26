@@ -198,7 +198,8 @@ fn route(store: &Store, method: &str, path: &str, query: &str, body: &[u8]) -> R
                 es::route_es(src, "sample", Some(&index), Some(query), None, None, None).map(|v| v.unwrap_or(json!({})))
             }
             (6, "PUT") if segments[5] == "mapping" => {
-                es::route_es(src, "put-mapping", Some(&index), None, Some(&parse_body(body)?), None, None)
+                // query 里带 type=xxx（ES 6 的 mapping 更新要求类型名进 URL）
+                es::route_es(src, "put-mapping", Some(&index), Some(query), Some(&parse_body(body)?), None, None)
                     .map(|v| v.unwrap_or(json!({})))
             }
             (7, "PUT") if segments[5] == "aliases" => {

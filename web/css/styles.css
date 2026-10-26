@@ -1764,8 +1764,8 @@ body.modal-dragging, body.modal-dragging * { cursor: grabbing !important; user-s
 .hit-kv i { font-style: normal; color: var(--accent); }
 .hit-actions { display: flex; gap: 8px; margin-bottom: 10px; }
 .hit-actions .spacer { flex: 1; }
-#hit-src { margin: 0; max-height: 56vh; border-radius: 8px; background: #0f172a; }
-#hit-src.json-view { color: #e2e8f0; }
+/* 文档明细的 JSON：白底浅色主题（语法高亮沿用 .json-view 的浅色配色） */
+#hit-src { margin: 0; max-height: 56vh; border-radius: 8px; background: #fff; color: var(--text); }
 
 .mask .m-f {
   padding: 12px 18px;
