@@ -57,11 +57,21 @@
     if (pop) { pop.remove(); pop = null; popBtn = null; }
     document.removeEventListener('mousedown', onDocDown, true);
     window.removeEventListener('resize', closePicker);
-    window.removeEventListener('scroll', closePicker, true);
+    window.removeEventListener('scroll', onScroll, true);
   }
 
   function onDocDown(e) {
     if (pop && !pop.contains(e.target) && e.target !== popBtn) closePicker();
+  }
+
+  // 滚动时不要关浮层——浮层内部的列表滚动（滚轮 / 拖滚动条）是最常用的操作，
+  // 一关就没法继续选了。外部滚动时贴着按钮重新定位；按钮滚出视口才收起。
+  function onScroll(e) {
+    if (!pop || !popBtn) return;
+    if (e && e.target && pop.contains(e.target)) return; // 浮层内部滚动，不处理
+    const r = popBtn.getBoundingClientRect();
+    if (r.bottom < 0 || r.top > window.innerHeight) { closePicker(); return; }
+    position();
   }
 
   function position() {
@@ -100,7 +110,7 @@
       position();
       document.addEventListener('mousedown', onDocDown, true);
       window.addEventListener('resize', closePicker);
-      window.addEventListener('scroll', closePicker, true);
+      window.addEventListener('scroll', onScroll, true);
       const s = pop.querySelector('.cp-search input');
       if (s) s.focus();
     });

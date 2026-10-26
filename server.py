@@ -275,6 +275,16 @@ def check_index_name(index):
 
 SAFE_ALIAS_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
+# mapping 类型名（ES 6）：自定义类型名允许字母数字下划线点横线
+SAFE_MAPPING_TYPE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,255}$")
+
+
+def check_mapping_type(mtype):
+    """校验 ES 6 的 mapping 类型名（要拼进 URL 路径）。"""
+    if not mtype or not SAFE_MAPPING_TYPE_RE.match(mtype):
+        raise ApiError(400, "非法 mapping 类型名")
+    return mtype
+
 
 def check_alias_name(alias):
     """别名命名规则与索引一致：小写开头，可含数字、_、-、.，且不能与索引名冲突词相同。"""
@@ -365,7 +375,12 @@ def route_es(src, action, index=None, query=None, body=None, alias=None, doc_id=
             raise ApiError(403, "该数据源处于只读模式，禁止修改字段")
         if not isinstance(body, dict) or not body:
             raise ApiError(400, "字段定义不能为空")
-        return es_request(src, "/%s/_mapping" % enc, method="PUT", body=body)
+        # ES 6 的 mapping 更新要求类型名进 URL（PUT /索引/_mapping/类型），ES 7/8 不带
+        mtype = (query.get("type") or [""])[0]
+        suffix = ""
+        if mtype:
+            suffix = "/" + urllib.parse.quote(check_mapping_type(mtype), safe="-._")
+        return es_request(src, "/%s/_mapping%s" % (enc, suffix), method="PUT", body=body)
 
     if action == "alias-add":
         if src.get("readonly"):
@@ -739,7 +754,8 @@ class Handler(BaseHTTPRequestHandler):
                             self._json(200, route_es(src, "sample", index, query))
                             return
                         if sub == "mapping" and method == "PUT":
-                            self._json(200, route_es(src, "put-mapping", index, body=self._read_json()))
+                            # query 里带 type=xxx（ES 6 的 mapping 更新要求类型名进 URL）
+                            self._json(200, route_es(src, "put-mapping", index, query=query, body=self._read_json()))
                             return
                     if len(segments) == 7 and segments[5] == "aliases":
                         alias = check_alias_name(segments[6])

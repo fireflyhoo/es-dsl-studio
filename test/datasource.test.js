@@ -226,6 +226,26 @@ const cloned = E.fieldDefFromRaw(rawMapping, 'author');
 cloned.properties.age.type = 'long';
 eq('fieldDefFromRaw-深拷贝不影响原对象', rawMapping.properties.author.properties.age.type, 'integer');
 
+// ---- 15.4 ES 6 的 type 嵌套 mapping（{ <type>: { properties } }）----
+const rawMapping6 = {
+  ecs_vts_im_session_group: {
+    properties: {
+      bizDate: { type: 'date', format: 'yyyy-MM-dd HH:mm:ss' },
+      bizNumber: { type: 'keyword' },
+      sub: { properties: { leaf: { type: 'long' } } },
+    },
+    _meta: { studioFieldOrder: ['bizDate', 'bizNumber'] },
+  },
+};
+eq('fieldDefFromRaw-ES6-顶层字段', E.fieldDefFromRaw(rawMapping6, 'bizNumber'), { type: 'keyword' });
+eq('fieldDefFromRaw-ES6-嵌套字段', E.fieldDefFromRaw(rawMapping6, 'sub.leaf'), { type: 'long' });
+eq('fieldDefFromRaw-ES6-不存在返回 null', E.fieldDefFromRaw(rawMapping6, 'nope'), null);
+eq('mappingTypeOf-ES6-取类型名', E.mappingTypeOf(rawMapping6), 'ecs_vts_im_session_group');
+eq('mappingTypeOf-ES8-无类型名', E.mappingTypeOf(rawMapping), '');
+eq('mappingMetaOf-ES6-读类型下的_meta', E.mappingMetaOf(rawMapping6), { studioFieldOrder: ['bizDate', 'bizNumber'] });
+eq('mappingMetaOf-ES8-读根下的_meta', E.mappingMetaOf({ _meta: { studioFieldOrder: ['a'] } }), { studioFieldOrder: ['a'] });
+eq('mappingMetaOf-无_meta返回空对象', E.mappingMetaOf({ properties: {} }), {});
+
 // ---- 16. 创建索引 / 添加字段：transport 请求构造（mock fetch）----
 (async () => {
   const src = { id: 'ds_x', url: 'http://localhost:9200', authType: 'none' };

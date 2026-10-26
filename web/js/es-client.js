@@ -224,23 +224,40 @@
   function typeGroup(t) { return TYPE_GROUP[t] || 'other'; }
 
   /* ---------------- mapping 扁平化 ---------------- */
-  // 输入 _mapping 响应里的 mappings 节点，输出按层级排序的字段列表
-  function flattenMapping(mappings) {
-    let props = null;
-    if (mappings && typeof mappings === 'object') {
-      if (mappings.properties) {
-        props = mappings.properties;
-      } else {
-        // ES 6 及更早：{ _doc: { properties } } 或 { typeName: { properties } }
-        for (const k of Object.keys(mappings)) {
-          const v = mappings[k];
-          if (v && typeof v === 'object' && !Array.isArray(v) && v.properties) {
-            props = v.properties;
-            break;
-          }
-        }
+  // mapping 根解析：ES 7/8 是 { properties }；ES 6 及更早是 { <type>: { properties } }
+  // 返回 { type, props }——type 在 ES 6 下是 mapping 类型名（更新 mapping 时必须放进 URL）
+  function mappingRoot(rawMapping) {
+    if (!rawMapping || typeof rawMapping !== 'object') return { type: '', props: null };
+    if (rawMapping.properties) return { type: '', props: rawMapping.properties };
+    for (const k of Object.keys(rawMapping)) {
+      const v = rawMapping[k];
+      if (v && typeof v === 'object' && !Array.isArray(v) && v.properties) {
+        return { type: k, props: v.properties };
       }
     }
+    return { type: '', props: null };
+  }
+
+  // ES 6 的 mapping 类型名（ES 7/8 返回空串）
+  function mappingTypeOf(rawMapping) {
+    return mappingRoot(rawMapping).type;
+  }
+
+  // _meta 节点：ES 6 在类型下（{ type: { _meta } }），ES 7/8 在根下（{ _meta }）
+  function mappingMetaOf(rawMapping) {
+    if (!rawMapping || typeof rawMapping !== 'object') return {};
+    if (rawMapping._meta && typeof rawMapping._meta === 'object') return rawMapping._meta;
+    const root = mappingRoot(rawMapping);
+    if (root.type) {
+      const node = rawMapping[root.type];
+      if (node && node._meta && typeof node._meta === 'object') return node._meta;
+    }
+    return {};
+  }
+
+  // 输入 _mapping 响应里的 mappings 节点，输出按层级排序的字段列表
+  function flattenMapping(mappings) {
+    const props = mappingRoot(mappings).props;
 
     const out = [];
 
@@ -379,7 +396,8 @@
       sample: (index, size) => api(base + '/indices/' + encIndex(index) + '/sample?size=' + (size || 10)),
       remove: (index) => api(base + '/indices/' + encIndex(index), { method: 'DELETE' }),
       create: (index, body) => api(base + '/indices/' + encIndex(index), { method: 'PUT', body: body || {} }),
-      putMapping: (index, body) => api(base + '/indices/' + encIndex(index) + '/mapping', { method: 'PUT', body: body }),
+      // ES 6 的 mapping 更新要求类型名进 URL（PUT /索引/_mapping/类型），ES 7/8 不带
+      putMapping: (index, body, type) => api(base + '/indices/' + encIndex(index) + '/mapping' + (type ? '?type=' + encodeURIComponent(type) : ''), { method: 'PUT', body: body }),
       addAlias: (index, alias, body) => api(base + '/indices/' + encIndex(index) + '/aliases/' + encAlias(alias), { method: 'PUT', body: body || {} }),
       removeAlias: (index, alias) => api(base + '/indices/' + encIndex(index) + '/aliases/' + encAlias(alias), { method: 'DELETE' }),
       queryDocs: (index, body) => api(base + '/docs/' + encIndex(index), { method: 'POST', body: body || {}, timeout: 30000 }),
@@ -472,7 +490,8 @@
       sample: (index, size) => directRequest(src, '/' + encIndex(index) + '/_search?size=' + (size || 10) + '&track_total_hits=true'),
       remove: (index) => directRequest(src, '/' + encIndex(index), { method: 'DELETE' }),
       create: (index, body) => directRequest(src, '/' + encIndex(index), { method: 'PUT', body: body || {} }),
-      putMapping: (index, body) => directRequest(src, '/' + encIndex(index) + '/_mapping', { method: 'PUT', body: body }),
+      // ES 6 的 mapping 更新要求类型名进 URL（PUT /索引/_mapping/类型），ES 7/8 不带
+      putMapping: (index, body, type) => directRequest(src, '/' + encIndex(index) + '/_mapping' + (type ? '/' + encIndex(type) : ''), { method: 'PUT', body: body }),
       addAlias: (index, alias, body) => directRequest(src, '/' + encIndex(index) + '/_alias/' + encAlias(alias), { method: 'PUT', body: body || {} }),
       removeAlias: (index, alias) => directRequest(src, '/' + encIndex(index) + '/_alias/' + encAlias(alias), { method: 'DELETE' }),
       queryDocs: (index, body) => directRequest(src, '/' + encIndex(index) + '/_search', {
@@ -541,7 +560,7 @@
   function fieldDefFromRaw(rawMapping, path) {
     const parts = String(path || '').split('.').filter(Boolean);
     if (!parts.length) return null;
-    let node = rawMapping && rawMapping.properties ? rawMapping.properties : null;
+    let node = mappingRoot(rawMapping).props;
     let def = null;
     for (let i = 0; i < parts.length; i++) {
       if (!node || typeof node !== 'object') return null;
@@ -806,6 +825,8 @@
     parseDetail,
     indexSettingsSummary,
     fieldDefFromRaw,
+    mappingTypeOf,
+    mappingMetaOf,
     buildMappingBody,
     rowToDef,
     isCorsLike,

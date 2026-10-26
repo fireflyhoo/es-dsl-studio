@@ -9,7 +9,7 @@
   const {
     formatBytes, formatCount, hostOf, typeCounts, filterFields,
     parseDetail, indexSettingsSummary, transport, Sources, AUTH_TYPES,
-    fieldDefFromRaw, buildMappingBody, rowToDef,
+    fieldDefFromRaw, mappingTypeOf, mappingMetaOf, buildMappingBody, rowToDef,
     DATA_OPS, buildDocsQuery,
   } = E;
 
@@ -1685,19 +1685,19 @@
     batch.saving = true;
     renderDetail();
     try {
-      await transport(src).putMapping(batch.index, buildMappingBody(newEntries));
+      // ES 6 的 mapping 更新必须带类型名（PUT /索引/_mapping/类型），ES 7/8 不带
+      const mapType = mappingTypeOf(batchRawMapping(batch));
+      await transport(src).putMapping(batch.index, buildMappingBody(newEntries), mapType);
       // ES 的 _mapping 不保留字段顺序（按字母返回）——把创建顺序写进 _meta.studioFieldOrder，
       // 供「数据 → 添加记录」表单按创建顺序展示。注意 ES 更新 _meta 是整份替换，需先合并旧值
       try {
-        const key0 = batch.sid + '|' + batch.index;
-        const oldRec = state.detail[key0];
-        const oldMeta = (oldRec && oldRec.data && oldRec.data.rawMapping && oldRec.data.rawMapping._meta) || {};
+        const oldMeta = mappingMetaOf(batchRawMapping(batch));
         const prevOrder = Array.isArray(oldMeta.studioFieldOrder) ? oldMeta.studioFieldOrder : [];
         const added = newEntries.map((e) => e.path).filter((p) => prevOrder.indexOf(p) === -1);
         if (added.length) {
           await transport(src).putMapping(batch.index, {
             _meta: Object.assign({}, oldMeta, { studioFieldOrder: prevOrder.concat(added) }),
-          });
+          }, mapType);
         }
       } catch (me) { /* _meta 写入失败不影响字段已保存，顺序回退为字母序 */ }
       // 新字段并入「已有字段」并默认勾选，方便紧接着生成 DSL 同步到其他环境
@@ -1728,7 +1728,13 @@
   }
 
   /* ---------------- 索引变更 DSL 弹窗 ---------------- */
-  let dslState = null; // {index, entries: [{path, def, from}], src}
+  let dslState = null; // {index, entries: [{path, def, from}], src, type}
+
+  // 当前批次的原始 mapping 节点
+  function batchRawMapping(batch) {
+    const rec = batch && state.detail[batch.sid + '|' + batch.index];
+    return (rec && rec.data && rec.data.rawMapping) || {};
+  }
 
   function openDslModal() {
     const batch = state.batch;
@@ -1736,7 +1742,9 @@
     const { entries, rowErrors } = collectBatchEntries();
     if (rowErrors.length) { toast(rowErrors[0].error); return; }
     if (!entries.length) { toast('请先勾选已有字段，或填写新增字段'); return; }
-    dslState = { index: batch.index, entries: entries, src: srcOf(batch.sid) };
+    // ES 6 的 mapping 更新必须带类型名（PUT /索引/_mapping/类型），ES 7/8 不带
+    const type = mappingTypeOf(batchRawMapping(batch));
+    dslState = { index: batch.index, entries: entries, src: srcOf(batch.sid), type: type };
     renderDslModal();
     $('#dsl-mask').classList.add('show');
   }
@@ -1751,13 +1759,14 @@
   }
 
   function dslRequestLine() {
-    return 'PUT /' + dslState.index + '/_mapping';
+    // ES 6 需要类型名进 URL；ES 7/8 是 PUT /索引/_mapping
+    return 'PUT /' + dslState.index + '/_mapping' + (dslState.type ? '/' + dslState.type : '');
   }
 
   function dslCurl() {
     const src = dslState.src || {};
     const base = String(src.url || 'http://localhost:9200').replace(/\/+$/, '');
-    return 'curl -X PUT "' + base + '/' + dslState.index + '/_mapping" \\\n' +
+    return 'curl -X PUT "' + base + '/' + dslState.index + '/_mapping' + (dslState.type ? '/' + dslState.type : '') + '" \\\n' +
       "  -H 'Content-Type: application/json' \\\n" +
       "  -d '" + JSON.stringify(dslBody()) + "'";
   }
@@ -1855,7 +1864,7 @@
     const rec = state.detail[key];
     const fields = E.sortFieldsByOrder(
       ((rec && rec.data && rec.data.fields) || []).filter((f) => f.depth === 0 && !f.isMultiField),
-      rec && rec.data && rec.data.rawMapping && rec.data.rawMapping._meta && rec.data.rawMapping._meta.studioFieldOrder
+      mappingMetaOf((rec && rec.data && rec.data.rawMapping) || {}).studioFieldOrder
     );
     const source = doc && doc._source ? doc._source : {};
 
