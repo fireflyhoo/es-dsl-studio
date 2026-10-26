@@ -1,6 +1,6 @@
 [package]
 name = "es-dsl-studio"
-version = "1.1.0"
+version = "1.2.0"
 description = "ES DSL Studio - Elasticsearch DSL 查询工作台（桌面版）"
 authors = ["ES DSL Studio"]
 edition = "2021"
