@@ -93,20 +93,46 @@
     pop.pop.style.top = top + 'px';
   }
 
-  function render() {
+  // 选项超过此数量时，浮层顶部显示搜索过滤框（小下拉保持纯点击即可，免打扰）
+  const SEARCH_MIN = 8;
+
+  function loadItems() {
     if (!pop) return;
-    pop.items = itemsOf(pop.sel);
-    if (!pop.items.length) {
-      pop.pop.innerHTML = '<div class="fs-empty">没有可选项</div>';
-      position();
-      return;
-    }
-    pop.pop.innerHTML = pop.items.map((it, i) =>
-      '<button type="button" class="fs-item dsel-item' + (it.sel ? ' on' : '') + '" data-i="' + i + '" title="' + esc(it.label) + '">' +
+    pop.allItems = itemsOf(pop.sel);
+    pop.items = pop.allItems;
+  }
+
+  function applyFilter() {
+    if (!pop) return;
+    const kw = (pop._q || '').trim().toLowerCase();
+    if (!kw) { pop.items = pop.allItems; return; }
+    pop.items = pop.allItems.filter((it) =>
+      it.label.toLowerCase().includes(kw) ||
+      (it.type && it.type.toLowerCase().includes(kw)));
+  }
+
+  function itemHtml(it, i) {
+    return '<button type="button" class="fs-item dsel-item' + (it.sel ? ' on' : '') + '" data-i="' + i + '" title="' + esc(it.label) + '">' +
       '<span class="dsel-check' + (it.sel ? ' on' : '') + '"></span>' +
       '<span class="fs-path' + (it.value === '' ? ' dim' : '') + '">' + esc(it.label) + '</span>' +
       (it.type && badgeRenderer ? badgeRenderer(it.type) : '') +
-      '</button>').join('');
+      '</button>';
+  }
+
+  // 只重绘列表区（搜索框保持不变、焦点不丢）
+  function renderList() {
+    if (!pop) return;
+    if (!pop.allItems.length) {
+      pop.list.innerHTML = '<div class="fs-empty">没有可选项</div>';
+      position();
+      return;
+    }
+    if (!pop.items.length) {
+      pop.list.innerHTML = '<div class="fs-empty">没有匹配「' + esc(pop._q) + '」的项</div>';
+      position();
+      return;
+    }
+    pop.list.innerHTML = pop.items.map(itemHtml).join('');
     position();
   }
 
@@ -167,25 +193,48 @@
     close();
     const el = h('div', 'fs-pop dsel-pop');
     el.addEventListener('mousedown', (e) => {
-      e.preventDefault(); // 抢在 blur / 重绘之前，点选稳定生效
+      // 仅在点选项时拦截默认行为，避免点搜索框时抢走焦点
       const item = e.target.closest('.fs-item');
-      if (item) pick(Number(item.dataset.i));
+      if (item) { e.preventDefault(); pick(Number(item.dataset.i)); }
     });
     document.body.appendChild(el);
     // 类型下拉选项文案长（如「keyword（精确值 / 聚合 / 排序）」），浮层给足最小宽度，避免省略号
-    pop = {
-      pop: el, wrap: wrap, sel: sel, btn: btn, items: [],
-      minW: wrap.dataset.kind === 'type' ? 240 : 132,
-    };
+    const minW = wrap.dataset.kind === 'type' ? 240 : 132;
+    pop = { pop: el, wrap: wrap, sel: sel, btn: btn, items: [], allItems: [], _q: '', searchInput: null, list: null, minW: minW };
+    // 选项较多时，浮层顶部加一个搜索过滤框（可按字段名 / 类型筛选）
+    const all = itemsOf(sel);
+    if (all.length >= SEARCH_MIN) {
+      const sdiv = h('div', 'fs-search');
+      const inp = h('input', 'fs-search-input');
+      inp.type = 'text';
+      inp.autocomplete = 'off';
+      inp.spellcheck = false;
+      inp.placeholder = wrap.dataset.kind === 'field' ? '搜索字段名或类型…' : '搜索…';
+      inp.addEventListener('mousedown', (e) => e.stopPropagation());
+      inp.addEventListener('input', () => {
+        pop._q = inp.value;
+        applyFilter();
+        renderList();
+        highlight(0);
+      });
+      sdiv.appendChild(inp);
+      el.appendChild(sdiv);
+      pop.searchInput = inp;
+    }
+    const list = h('div', 'fs-list');
+    el.appendChild(list);
+    pop.list = list;
     wrap.classList.add('open');
     window.addEventListener('scroll', position, true);
     window.addEventListener('resize', position);
     document.addEventListener('mousedown', outside, true);
     document.addEventListener('keydown', key, true);
-    render();
+    loadItems();
+    renderList();
     // 默认高亮当前选中项（无选中则第一项）
     const selIdx = pop.items.findIndex((it) => it.sel);
     highlight(selIdx >= 0 ? selIdx : 0);
+    if (pop.searchInput) setTimeout(() => pop.searchInput.focus(), 0);
   }
 
   // 把容器里的目标 select 升级为自绘下拉（幂等：已包 .dsel 的跳过）

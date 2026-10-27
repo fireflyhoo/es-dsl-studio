@@ -2142,6 +2142,25 @@
     return (list || []).map((f) => (typeof f === 'string' ? { path: f, type: '' } : { path: f.path, type: f.type || '' }));
   }
 
+  // 按字段路径查 mapping 类型，供 queries.js 决定 term 类查询值是否加引号
+  function fieldTypeOf(path) {
+    if (!path || typeof path !== 'string') return null;
+    if (/\.keyword$/.test(path)) return 'keyword';   // 显式 .keyword 多字段一定是 keyword
+    for (let i = 0; i < fieldHints.length; i++) {
+      if (fieldHints[i].path === path) return fieldHints[i].type || null;
+    }
+    // 剥掉多字段后缀（.text/.raw/.date 等）再试一次，命中父字段类型
+    const m = path.match(/^(.+)\.(keyword|text|raw|lower|lower_case|upper|uppercase|date|datetime|standard|english|search_as_you_type)$/);
+    if (m && m[1]) {
+      const base = fieldTypeOf(m[1]);
+      if (base) return base;
+    }
+    return null;
+  }
+  if (typeof ESQ !== 'undefined' && ESQ && typeof ESQ.setFieldTypeResolver === 'function') {
+    ESQ.setFieldTypeResolver(fieldTypeOf);
+  }
+
   // 清掉字段联想（chip + 下拉数据）；clearRunBar 为 true 时连顶栏索引一起清
   function clearActiveIndex(clearRunBar) {
     activeIndex = '';

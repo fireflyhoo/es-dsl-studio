@@ -45,6 +45,43 @@
     return String(v).split(/[\n,，]+/).map(s => s.trim()).filter(Boolean).map(coerce);
   }
 
+  // 字段类型感知的值转型（修正：keyword 字段输入纯数字被转成裸数字、丢掉引号的 bug）
+  // 由 app.js 在加载索引 mapping 后注入 resolver；未注入时退化为原来的 coerce 行为，避免回归。
+  let _fieldTypeResolver = null;
+  function setFieldTypeResolver(fn) { _fieldTypeResolver = (typeof fn === 'function') ? fn : null; }
+
+  const _NUMERIC_TYPES = new Set([
+    'long', 'integer', 'short', 'byte', 'double', 'float', 'half_float', 'scaled_float', 'unsigned_long',
+  ]);
+
+  // 判定字段映射类型归属：numeric -> 数值家族（按数字/布尔处理）；其余 -> 字符串家族（保持原样、导出带引号）
+  function esTypeFamily(t) {
+    if (!t) return 'unknown';
+    t = String(t).toLowerCase();
+    if (_NUMERIC_TYPES.has(t)) return 'numeric';
+    return 'string';
+  }
+
+  // 依据字段映射类型决定 term 类查询值的导出形态
+  // 设计原则：term 级查询的值默认就是「字符串」，只有明确为数值类型（long/integer/...）才转成数字。
+  // 这样 keyword / text / ip / date 乃至「类型未探明」的字段，输入纯数字都会带引号，避免匹配不到。
+  function coerceValueForField(raw, field) {
+    if (typeof raw !== 'string') return raw;
+    const fam = esTypeFamily(_fieldTypeResolver ? _fieldTypeResolver(field) : null);
+    if (fam === 'numeric') return coerce(raw);   // 数值字段 -> 数字/布尔
+    return raw;                                  // 字符串家族 / 未知 -> 原样字符串（JSON 中带引号）
+  }
+
+  function csvRaw(v) {
+    if (Array.isArray(v)) return v;
+    return String(v).split(/[\n,，]+/).map(s => s.trim()).filter(Boolean);
+  }
+
+  // 多值列表：每个元素按字段类型转型（terms / terms_set）
+  function csvForField(v, field) {
+    return csvRaw(v).map(s => coerceValueForField(s, field));
+  }
+
   // 尝试解析 JSON 字符串；空->undefined；失败->fallback
   function tryJSON(v, fallback) {
     if (isEmpty(v)) return undefined;
@@ -71,10 +108,12 @@
     const def = DEFS[n.type];
     const p = n.params;
     const f = isEmpty(p.field) ? '?field?' : p.field;
+    const vks = def.valueKeys || (def.valueKey ? [def.valueKey] : []);
     const o = {};
     for (const k of Object.keys(p)) {
       if (k === 'field' || isEmpty(p[k])) continue;
-      o[k] = coerce(p[k]);
+      // 仅对「字段值」按字段类型决定引号；boost / rewrite 等选项仍走原 coerce
+      o[k] = vks.indexOf(k) !== -1 ? coerceValueForField(p[k], f) : coerce(p[k]);
     }
     return { [n.type]: { [f]: o } };
   }
@@ -461,7 +500,7 @@
     build(n) {
       const f = isEmpty(n.params.field) ? '?field?' : n.params.field;
       const o = restParams(n, ['field', 'values']);
-      o[f] = csv(n.params.values || '');
+      o[f] = csvForField(n.params.values || '', f);
       return { terms: o };
     },
     fromJson(body, n) {
@@ -484,7 +523,7 @@
     build(n) {
       const f = isEmpty(n.params.field) ? '?field?' : n.params.field;
       const inner = {};
-      inner.terms = csv(n.params.terms || '');
+      inner.terms = csvForField(n.params.terms || '', f);
       for (const k of ['minimum_should_match_field', 'minimum_should_match_script']) {
         if (!isEmpty(n.params[k])) inner[k] = n.params[k];
       }
@@ -506,6 +545,7 @@
 
   def({
     type: 'range', cat: 'termq', cn: '范围查询', valueKey: null,
+    valueKeys: ['gte', 'gt', 'lte', 'lt', 'from', 'to'],
     desc: '数值 / 日期范围，支持 gt gte lt lte、日期数学表达式（now-7d/d）。',
     fields: [
       F('field', '字段名 *', 'text', { req: true }),
@@ -542,7 +582,7 @@
     fields: [F('values', '_id 列表 *（逗号或换行）', 'textarea', { req: true, rows: 2 }), BOOST],
     build(n) {
       const o = restParams(n, ['values']);
-      o.values = csv(n.params.values || '');
+      o.values = csvRaw(n.params.values || '');
       return { ids: o };
     },
     fromJson(body, n) { genericFrom(body, n); if (Array.isArray(body.values)) n.params.values = body.values.join('\n'); },
@@ -1543,7 +1583,7 @@
   /* ---------------- 导出 ---------------- */
   const api = {
     CATS, CATMAP, DEFS, mkNode, gen, importNode, importAggs, validate,
-    uid, isEmpty, coerce, csv, tryJSON,
+    uid, isEmpty, coerce, csv, tryJSON, setFieldTypeResolver,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   global.ESQ = api;

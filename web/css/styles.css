@@ -1187,6 +1187,20 @@ body.view-index #index-app { display: block; flex: 1; min-height: 0; padding: 12
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .fs-empty { padding: 10px 12px; font-size: 12px; color: var(--faint); }
+/* 自绘下拉的搜索过滤框（选项较多时吸顶显示，可按字段名 / 类型过滤） */
+.fs-search {
+  position: sticky; top: 0; z-index: 2;
+  margin: -4px -4px 4px; padding: 7px 8px;
+  background: #fff; border-bottom: 1px solid var(--border);
+}
+.fs-search-input {
+  width: 100%; box-sizing: border-box;
+  padding: 6px 9px; font: 12.5px var(--sans); color: var(--text);
+  background: #fff; border: 1px solid var(--border-strong); border-radius: 7px; outline: none;
+}
+.fs-search-input::placeholder { color: var(--faint); }
+.fs-search-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.fs-list { /* 列表区，沿用 .fs-pop 的滚动与内边距 */ }
 .fs-foot {
   padding: 6px 10px 4px; margin-top: 4px;
   font-size: 11px; color: var(--faint);
