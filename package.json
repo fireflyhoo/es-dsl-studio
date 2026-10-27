@@ -1,6 +1,6 @@
 {
   "name": "es-dsl-studio",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "private": true,
   "description": "ES DSL Studio - Elasticsearch DSL 查询工作台（Tauri 桌面版 + Python 服务端）",
   "scripts": {
