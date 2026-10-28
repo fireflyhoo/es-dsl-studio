@@ -2464,7 +2464,7 @@
     try { cached = JSON.parse(localStorage.getItem(UPDATE_CACHE_KEY) || 'null'); } catch (e) { cached = null; }
     if (cached) {
       const age = now - (cached.checkedAt || 0);
-      if (cached.latest && age < 24 * 3600 * 1000) { applyUpdate(cached.hasUpdate, cached.latest); return; }
+      if (cached.latest && age < 1 * 3600 * 1000) { applyUpdate(cached.hasUpdate, cached.latest); return; }
       if (!cached.latest && age < 3600 * 1000) return; // 失败 / 暂未发布，1h 内不再打扰
     }
     let latest = null, hasUpdate = false;
